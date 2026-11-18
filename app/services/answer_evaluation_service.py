@@ -1,3 +1,5 @@
+import re
+
 from app.ai.schemas import AnswerEvaluationSchema
 from app.ai.llm import generate_structured_output
 from app.ai.prompts import (
@@ -6,6 +8,48 @@ from app.ai.prompts import (
 )
 from app.core.interview_design import RUBRIC_VERSION, RUBRIC_MAX_SCORES
 from app.schemas.interview_history import AuditedAnswerEvaluation
+from app.schemas.screening import CandidateScreeningFacts
+
+
+def _validate_screening_facts(
+    facts: CandidateScreeningFacts,
+    candidate_answer: str,
+) -> None:
+    normalized_answer = " ".join(candidate_answer.casefold().split())
+
+    def validate_evidence(evidence: str, field_name: str) -> str:
+        normalized_evidence = " ".join(evidence.casefold().split()).strip("\"'")
+        if not normalized_evidence or normalized_evidence not in normalized_answer:
+            raise ValueError(f"{field_name} evidence must quote the candidate answer.")
+        return normalized_evidence
+
+    if facts.expected_ctc_lpa is not None:
+        if facts.salary_evidence is None:
+            raise ValueError("Expected CTC requires answer evidence.")
+        evidence = validate_evidence(facts.salary_evidence, "Expected CTC")
+        amount = re.escape(f"{facts.expected_ctc_lpa:g}")
+        if not re.search(rf"(?<!\d){amount}0*(?!\d)", evidence) or not re.search(
+            r"\b(?:lpa|lakhs?)\b",
+            evidence,
+        ):
+            raise ValueError(
+                "Expected CTC must be supported by a numeric LPA/lakh answer excerpt."
+            )
+
+    if facts.stated_notice_days is not None:
+        if facts.notice_evidence is None:
+            raise ValueError("Notice period requires answer evidence.")
+        evidence = validate_evidence(facts.notice_evidence, "Notice period")
+        if not re.search(
+            rf"(?<!\d){facts.stated_notice_days}(?!\d)",
+            evidence,
+        ) or not re.search(r"\bdays?\b", evidence):
+            raise ValueError(
+                "Notice period must be supported by a numeric answer excerpt in days."
+            )
+
+    for red_flag in facts.red_flags:
+        validate_evidence(red_flag.evidence, "Red flag")
 
 
 def evaluate_answer(
@@ -25,6 +69,7 @@ def evaluate_answer(
         response_schema=AnswerEvaluationSchema,
         temperature=0.0,
     )
+    _validate_screening_facts(evaluation.screening_facts, candidate_answer)
 
     expected_criteria = {
         point["criterion_id"]: point
@@ -105,4 +150,5 @@ def evaluate_answer(
         weaknesses=evaluation.weaknesses,
         missing_topics=evaluation.missing_topics,
         suggested_improvement=evaluation.suggested_improvement,
+        screening_facts=evaluation.screening_facts,
     )

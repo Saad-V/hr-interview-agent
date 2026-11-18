@@ -6,14 +6,18 @@ from app.core.enums import InterviewDifficulty
 from app.core.interview_design import (
     INTERVIEW_DESIGN_VERSION,
     QUESTION_MAX_SCORE,
+    RUBRIC_CRITERION_LABELS,
     RUBRIC_MAX_SCORES,
     RUBRIC_VERSION,
+    SECTION_TITLES,
     SECTION_WEIGHTS,
     InterviewSectionCategory,
     RubricCriterionId,
     question_count_for_duration,
     section_question_counts,
+    validate_prohibited_question_guardrail,
 )
+from app.schemas.screening import CandidateScreeningFacts
 
 
 # ----------------------------
@@ -71,6 +75,11 @@ class EvaluationPointSchema(BaseModel):
         if self.max_score != expected:
             raise ValueError(
                 f"{self.criterion_id.value} must be worth exactly {expected} points."
+            )
+        expected_label = RUBRIC_CRITERION_LABELS[self.criterion_id.value]
+        if self.criterion != expected_label:
+            raise ValueError(
+                f"{self.criterion_id.value} must use the label {expected_label!r}."
             )
         return self
 
@@ -130,6 +139,8 @@ class InterviewBlueprintSchema(BaseModel):
         seen_questions = set()
         for category, expected_count in expected_counts.items():
             section = sections[category]
+            if section.title != SECTION_TITLES[category]:
+                raise ValueError(f"{category} has an invalid HR workflow title.")
             if len(section.questions) != expected_count:
                 raise ValueError(
                     f"{category} must contain exactly {expected_count} questions."
@@ -143,6 +154,9 @@ class InterviewBlueprintSchema(BaseModel):
                 if normalized_question in seen_questions:
                     raise ValueError("Interview blueprint contains duplicate questions.")
                 seen_questions.add(normalized_question)
+                validate_prohibited_question_guardrail(question.question)
+                for follow_up in question.follow_up_questions:
+                    validate_prohibited_question_guardrail(follow_up)
         return self
 
 
@@ -161,10 +175,10 @@ class CriterionEvaluationSchema(BaseModel):
 class AnswerEvaluationSchema(BaseModel):
     criteria: list[CriterionEvaluationSchema]
     feedback: str
-
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
-
     missing_topics: list[str] = Field(default_factory=list)
-
     suggested_improvement: str
+    screening_facts: CandidateScreeningFacts = Field(
+        default_factory=CandidateScreeningFacts
+    )

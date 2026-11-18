@@ -1,10 +1,11 @@
 from enum import Enum
+import re
 
 from app.core.enums import InterviewDifficulty
 
 
-INTERVIEW_DESIGN_VERSION = "rubric-v1"
-RUBRIC_VERSION = "rubric-v1"
+INTERVIEW_DESIGN_VERSION = "hr-rubric-v1"
+RUBRIC_VERSION = "hr-rubric-v1"
 QUESTION_COUNT_ANCHORS = (
     (10, 4),
     (30, 8),
@@ -13,10 +14,16 @@ QUESTION_COUNT_ANCHORS = (
     (120, 22),
 )
 SECTION_WEIGHTS = {
-    "INTRODUCTION": 10,
+    "INTRODUCTION": 20,
     "PROJECTS": 35,
-    "TECHNICAL": 35,
+    "TECHNICAL": 25,
     "BEHAVIORAL": 20,
+}
+SECTION_TITLES = {
+    "INTRODUCTION": "01 / VERIFY: Background, Notice Period & Availability",
+    "PROJECTS": "02 / STAR PROJECTS: Past Project Deep-Dive",
+    "TECHNICAL": "03 / ASSESS: Motivation, Communication & Culture Fit",
+    "BEHAVIORAL": "04 / SALARY: Compensation Expectations & Band Check",
 }
 RUBRIC_MAX_SCORES = {
     "ACCURACY": 4,
@@ -24,6 +31,34 @@ RUBRIC_MAX_SCORES = {
     "REASONING": 2,
     "COMMUNICATION": 2,
 }
+RUBRIC_CRITERION_LABELS = {
+    "ACCURACY": "STAR Evidence & Factual Verification",
+    "COVERAGE": "Motivation & Role Alignment",
+    "REASONING": "Culture Fit & Ownership",
+    "COMMUNICATION": "Communication Clarity (STT-Tolerant)",
+}
+PROHIBITED_QUESTION_PATTERNS = (
+    "how old are you",
+    "your age",
+    "date of birth",
+    "birth year",
+    "religion",
+    "religious",
+    "caste",
+    "marital status",
+    "are you married",
+    "single or married",
+    "spouse",
+    "husband",
+    "wife",
+    "children",
+    "kids",
+    "pregnant",
+    "pregnancy",
+    "family status",
+    "planning a family",
+    "medical history",
+)
 TECHNICAL_CRITERIA = frozenset({"ACCURACY", "COVERAGE", "REASONING"})
 TECHNICAL_MAX_SCORE = sum(RUBRIC_MAX_SCORES[key] for key in TECHNICAL_CRITERIA)
 COMMUNICATION_MAX_SCORE = RUBRIC_MAX_SCORES["COMMUNICATION"]
@@ -46,20 +81,26 @@ class RubricCriterionId(str, Enum):
 
 DIFFICULTY_DEFINITIONS = {
     InterviewDifficulty.EASY: (
-        "Fresher / entry-level (typically 0-1 years of relevant professional "
-        "experience). Assess fundamentals, clear definitions, guided application, "
-        "and basic reasoning. Do not expect production ownership or specialist depth."
+        "Fresher Candidate Pool (0 years professional experience). Use the Fresher "
+        "HR Question Set: verify graduation timeline, immediate joining availability, "
+        "relocation/onsite readiness; probe academic capstone or internship projects "
+        "using the STAR method (Situation, Task, Action, Result); assess learning "
+        "motivation and culture fit; verify entry-level salary expectations."
     ),
     InterviewDifficulty.MEDIUM: (
-        "Independent early-to-mid-level practitioner (typically 2-5 years of "
-        "relevant experience). Assess practical application, trade-offs, debugging, "
-        "and the ability to explain decisions with concrete examples."
+        "Early-Career Candidate Pool (1–3 years professional experience). Use the "
+        "1–3 Year HR Question Set: verify current employment, official notice period, "
+        "and earliest joining date; probe hands-on project contributions and teamwork "
+        "using the STAR method; assess reason for job switch and culture alignment; "
+        "check current and expected CTC against the approved salary band."
     ),
     InterviewDifficulty.HARD: (
-        "Experienced senior practitioner (typically 5+ years or equivalent depth). "
-        "Assess system-level judgment, complex trade-offs, failure modes, security, "
-        "scale, and the ability to defend decisions. Do not equate difficulty with "
-        "obscure trivia."
+        "Mid-Level Candidate Pool (3–6 years professional experience). Use the "
+        "3–6 Year HR Question Set: verify career progression, notice period "
+        "buyout/negotiability, and role transitions; probe high-ownership projects, "
+        "cross-team conflict resolution, and measurable impact using the STAR method; "
+        "assess long-term motivation and leadership culture fit; check expected CTC "
+        "against the approved band."
     ),
 }
 
@@ -123,14 +164,97 @@ def section_question_counts(question_count: int) -> dict[str, int]:
     return allocations
 
 
-def recommendation_for_score(overall_percentage: float) -> str:
+def validate_prohibited_question_guardrail(question_text: str) -> None:
+    normalized_question = " ".join(question_text.casefold().split())
+    for term in PROHIBITED_QUESTION_PATTERNS:
+        pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+        if re.search(pattern, normalized_question):
+            raise ValueError(
+                "Guardrail Violation: Question contains prohibited "
+                f"personal/demographic inquiry ({term})."
+            )
+
+
+def band_lookup_tool(
+    *,
+    expected_ctc_lpa: float | None,
+    min_band_lpa: float,
+    max_band_lpa: float,
+    stated_notice_days: int | None = None,
+    max_notice_days: int = 60,
+) -> dict[str, float | int | str | None]:
+    if min_band_lpa > max_band_lpa:
+        raise ValueError("Minimum salary band must not exceed the maximum band.")
+    if expected_ctc_lpa is not None and expected_ctc_lpa < 0:
+        raise ValueError("Expected CTC cannot be negative.")
+    if stated_notice_days is not None and stated_notice_days < 0:
+        raise ValueError("Notice period cannot be negative.")
+    if max_notice_days < 0:
+        raise ValueError("Maximum notice period cannot be negative.")
+
+    if expected_ctc_lpa is None:
+        salary_status = "NOT_DISCLOSED"
+    elif expected_ctc_lpa > max_band_lpa:
+        salary_status = "OUTSIDE_BAND"
+    elif expected_ctc_lpa < min_band_lpa:
+        salary_status = "BELOW_BAND"
+    else:
+        salary_status = "WITHIN_BAND"
+
+    if stated_notice_days is None:
+        notice_status = "NOT_DISCLOSED"
+    elif stated_notice_days > max_notice_days:
+        notice_status = "EXCEEDS_POLICY"
+    else:
+        notice_status = "ALIGNED"
+
+    return {
+        "approved_min_lpa": min_band_lpa,
+        "approved_max_lpa": max_band_lpa,
+        "candidate_expected_lpa": expected_ctc_lpa,
+        "salary_alignment_status": salary_status,
+        "max_notice_days": max_notice_days,
+        "candidate_notice_days": stated_notice_days,
+        "notice_alignment_status": notice_status,
+    }
+
+
+def evaluate_human_checkpoint(
+    *,
+    salary_alignment_status: str,
+    notice_alignment_status: str,
+    red_flags: list[dict],
+) -> dict[str, bool | list[str]]:
+    reasons = []
+    if salary_alignment_status == "OUTSIDE_BAND":
+        reasons.append(
+            "Expected salary exceeds approved band — requires human approval."
+        )
+    if notice_alignment_status == "EXCEEDS_POLICY":
+        reasons.append("Notice period exceeds maximum allowed threshold.")
+    if red_flags:
+        reasons.append(
+            f"{len(red_flags)} evidence-backed red flag(s) identified during screening."
+        )
+    return {
+        "human_checkpoint_required": bool(reasons),
+        "checkpoint_reasons": reasons,
+    }
+
+
+def recommendation_for_score(
+    overall_percentage: float,
+    human_checkpoint_required: bool = False,
+) -> str:
+    if human_checkpoint_required and overall_percentage >= 55:
+        return "Human Checkpoint — Pending Approval"
     if overall_percentage >= 85:
-        return "Strong Hire"
+        return "Pass to Final Round (Strong Fit)"
     if overall_percentage >= 70:
-        return "Hire"
+        return "Pass to Final Round"
     if overall_percentage >= 55:
-        return "Borderline"
-    return "No Hire"
+        return "Borderline — Recruiter Review"
+    return "Do Not Pass"
 
 
 def calculate_report_scores(evaluations: list[dict]) -> dict[str, int | float]:

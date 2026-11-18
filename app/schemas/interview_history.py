@@ -6,6 +6,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from app.core.enums import InterviewDifficulty, InterviewStatus
 from app.core.interview_design import RubricCriterionId
 from app.schemas.report import InterviewReportResponse
+from app.schemas.screening import CandidateScreeningFacts
 
 
 class InterviewReportPreview(BaseModel):
@@ -66,6 +67,9 @@ class AuditedAnswerEvaluation(BaseModel):
     weaknesses: list[str] = Field(default_factory=list)
     missing_topics: list[str] = Field(default_factory=list)
     suggested_improvement: str
+    screening_facts: CandidateScreeningFacts = Field(
+        default_factory=CandidateScreeningFacts
+    )
 
 
 class AnswerEvaluationResponse(BaseModel):
@@ -84,6 +88,9 @@ class AnswerEvaluationResponse(BaseModel):
     weaknesses: list[str] = Field(default_factory=list)
     missing_topics: list[str] = Field(default_factory=list)
     suggested_improvement: str = ""
+    screening_facts: CandidateScreeningFacts = Field(
+        default_factory=CandidateScreeningFacts
+    )
 
 
 class ConversationTurnHistoryResponse(BaseModel):

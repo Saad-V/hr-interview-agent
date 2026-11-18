@@ -5,15 +5,18 @@ from app.core.enums import InterviewDifficulty
 from app.core.interview_design import (
     DIFFICULTY_DEFINITIONS,
     INTERVIEW_DESIGN_VERSION,
+    RUBRIC_CRITERION_LABELS,
     RUBRIC_VERSION,
+    SECTION_TITLES,
+    SECTION_WEIGHTS,
     question_count_for_duration,
     section_question_counts,
 )
 
 
 CANDIDATE_PROFILE_SYSTEM_PROMPT = """
-You are an expert technical recruiter with extensive experience screening
-software engineering resumes.
+You are an HR screening analyst extracting factual, job-related details from
+candidate resumes.
 
 Your task is to analyze a candidate's resume and extract only factual
 information.
@@ -26,6 +29,7 @@ Rules:
 - Do not hallucinate information.
 - If information is missing, use empty strings, empty lists, or null values where appropriate.
 - Do not infer skills, experience, or projects that are not explicitly mentioned.
+- Do not extract or infer protected or demographic characteristics.
 - Preserve technology names exactly as written whenever possible.
 -The summary must be factual and professional.
 
@@ -51,7 +55,7 @@ def build_candidate_profile_prompt(
 
 
 JOB_PROFILE_SYSTEM_PROMPT = """
-You are an expert technical recruiter.
+You are an HR role analyst.
 
 Your task is to analyze a job description and extract only factual
 information.
@@ -80,22 +84,11 @@ Job Description:
 
 
 INTERVIEW_BLUEPRINT_SYSTEM_PROMPT = """
-You design interview questions for a structured practice interview.
+You design questions for a structured HR screening interview.
 
 Follow the supplied interview design version, duration, question quotas, and
 difficulty definition exactly. The backend validates these requirements and
 rejects a blueprint that does not match them.
-
-Difficulty definitions:
-- EASY: Fresher / entry-level, typically 0-1 years. Test fundamentals, clear
-  definitions, guided application, and basic reasoning. Do not expect
-  production ownership or specialist depth.
-- MEDIUM: Independent early-to-mid-level practitioner, typically 2-5 years.
-  Test practical application, trade-offs, debugging, and decisions explained
-  with concrete examples.
-- HARD: Experienced senior practitioner, typically 5+ years or equivalent
-  depth. Test system-level judgment, complex trade-offs, failure modes,
-  security, scale, and defended decisions. Do not use obscure trivia.
 
 Rules:
 - All generated questions use the selected difficulty. Do not mix levels.
@@ -106,11 +99,22 @@ Rules:
   BEHAVIORAL. Return each category exactly once.
 - Return sections in this exact order: INTRODUCTION, PROJECTS, TECHNICAL,
   BEHAVIORAL.
+- Use the exact HR workflow titles and section weights from the request. The
+  BEHAVIORAL salary and compensation-band section must always be last.
+- Use STAR (Situation, Task, Action, Result) probes for academic, internship,
+  and work projects, calibrated to the selected experience pool.
+- Keep every question job-related. Never ask about age, date of birth,
+  religion, caste, marital or family status, pregnancy, or medical history.
+- Do not infer protected or demographic characteristics from the resume,
+  answer, name, or any other source.
+- Ask for factual notice-period, availability, motivation, and salary
+  information. Do not make a pass/fail decision or infer salary alignment;
+  deterministic backend policy tools handle configured thresholds.
 - Each question is worth exactly 10 points and has exactly these four rubric
   criteria, each once: ACCURACY (4), COVERAGE (2), REASONING (2), and
   COMMUNICATION (2). The max_score values are fixed; do not change them.
-- Write the first three criterion descriptions to identify question-specific
-  observable evidence. COMMUNICATION uses clarity, structure, and directness;
+- Use the exact criterion labels supplied in the request. Descriptions must
+  identify job-related, observable evidence. COMMUNICATION is STT-tolerant;
   ignore grammar, accent, and speech-transcription artifacts.
 - Expected topics and rubric descriptions must be specific and assessable.
 - Avoid duplicate questions. Follow-up questions may be included as optional
@@ -131,6 +135,15 @@ def build_interview_blueprint_prompt(
         f"- {category}: exactly {count} questions"
         for category, count in counts.items()
     )
+    section_specs = "\n".join(
+        f'- {category}: "{SECTION_TITLES[category]}" '
+        f"({SECTION_WEIGHTS[category]}% weight)"
+        for category in counts
+    )
+    rubric_labels = "\n".join(
+        f"- {criterion_id}: {label}"
+        for criterion_id, label in RUBRIC_CRITERION_LABELS.items()
+    )
 
     return f"""
 Generate one complete, fixed-size interview blueprint.
@@ -143,15 +156,14 @@ Total question count: {sum(counts.values())}
 Selected difficulty: {difficulty.value}
 Difficulty definition: {DIFFICULTY_DEFINITIONS[difficulty]}
 
-Exact section quotas and weights:
-
-- INTRODUCTION: 10% weight
-- PROJECTS: 35% weight
-- TECHNICAL: 35% weight
-- BEHAVIORAL: 20% weight
+Exact section titles and weights, in the required order:
+{section_specs}
 
 Exact question count per section:
 {section_counts}
+
+Exact rubric labels:
+{rubric_labels}
 
 Candidate Profile:
 {candidate_json}
@@ -162,13 +174,17 @@ Job Profile:
 
 
 INTERVIEW_EVALUATION_SYSTEM_PROMPT = """
-Evaluate one answer using only the supplied question, selected difficulty,
-expected topics, and fixed rubric. The rubric is:
+Evaluate one answer using only the supplied question, selected HR experience
+pool, expected topics, answer evidence, and fixed rubric. The rubric is:
 
-- ACCURACY (0-4): correctness and relevance of role-specific concepts.
-- COVERAGE (0-2): coverage of the expected topics and the question asked.
-- REASONING (0-2): logical explanation, application, or justified trade-offs.
-- COMMUNICATION (0-2): clarity, structure, and directness.
+- ACCURACY (0-4), "STAR Evidence & Factual Verification": answer-specific
+  evidence, factual consistency, and concrete contribution.
+- COVERAGE (0-2), "Motivation & Role Alignment": explicit alignment with the
+  role and the question's expected topics.
+- REASONING (0-2), "Culture Fit & Ownership": job-related ownership,
+  collaboration, and reasoning demonstrated in the answer.
+- COMMUNICATION (0-2), "Communication Clarity (STT-Tolerant)": clarity,
+  structure, and directness.
 
 Score each criterion independently with an integer from zero through its exact
 maximum. Zero means absent, incorrect, or not demonstrated; full marks mean the
@@ -192,6 +208,14 @@ The candidate answer may be speech-to-text. Ignore grammar, accent, filler
 words, and obvious transcription errors. Evaluate intended meaning only when it
 is reasonably supported by the transcript.
 
+Extract screening facts only when the candidate explicitly states them:
+expected CTC only when a numeric amount has a clear LPA/lakh unit, and notice
+period only when a number of days is stated. Include an exact answer excerpt
+for every extracted value. Otherwise return null values and null evidence.
+Report a red flag only for a concrete, job-related concern supported by an
+exact answer excerpt; do not infer one from protected traits, personal
+circumstances, communication style, or missing information.
+
 For each criterion, return its exact criterion_id, awarded_score, and a short
 verbatim evidence excerpt from the candidate answer. If no evidence exists,
 return exactly "Not present in the answer." Evidence must not be invented.
@@ -213,6 +237,9 @@ def build_answer_evaluation_prompt(
     return f"""
 Scoring rubric version: {RUBRIC_VERSION}
 
+Use the fixed HR rubric labels:
+{chr(10).join(f"- {key}: {value}" for key, value in RUBRIC_CRITERION_LABELS.items())}
+
 Question:
 {question["question"]}
 
@@ -228,6 +255,11 @@ Question-specific rubric criteria and maximum points:
 
 Candidate Answer:
 {candidate_answer}
+
+Extract explicit expected CTC (numeric amount with LPA/lakh unit) and notice
+period (numeric days), with exact answer evidence. Return null if either is not
+explicit. Include only concrete, job-related red flags with exact answer
+evidence; do not infer protected or demographic traits.
 """
 
 
