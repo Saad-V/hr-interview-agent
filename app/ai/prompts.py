@@ -264,9 +264,10 @@ evidence; do not infer protected or demographic traits.
 
 
 INTERVIEW_REPORT_SYSTEM_PROMPT = """
-Write only the narrative portions of a mock-interview report. The answer
-evaluations and numeric scores have already been calculated. Do not rescore,
-infer scores, or make a hiring recommendation.
+Write only the narrative portions of an HR screening scorecard. The answer
+evaluations, weighted stage scores, policy checks, and recommendation have
+already been calculated by the backend. Do not rescore, infer scores, or make
+a hiring recommendation or final employment decision.
 
 Use only patterns supported by the per-answer feedback and evidence. Do not
 invent or overstate claims. Distinguish repeated patterns from a single

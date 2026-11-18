@@ -78,6 +78,60 @@ export interface InterviewReport {
   total_awarded_score?: number | null;
   total_maximum_score?: number | null;
   question_count?: number | null;
+  unweighted_overall_score?: number | null;
+  scorecard?: HRScorecard | null;
+  screening_summary?: HRScreeningSummary | null;
+}
+
+export interface HRSectionScore {
+  category: string;
+  title: string;
+  weight: number;
+  score_percentage: number;
+  points_awarded: number;
+  points_maximum: number;
+}
+
+export interface HRCompetencyScore {
+  criterion_id: string;
+  label: string;
+  points_awarded: number;
+  points_maximum: number;
+  score_percentage: number;
+}
+
+export interface HRScorecard {
+  weighted_score_percentage: number;
+  sections: HRSectionScore[];
+  criteria: HRCompetencyScore[];
+}
+
+export interface HRScreeningRedFlag {
+  turn_number: number | null;
+  section_title: string | null;
+  description: string;
+  evidence: string;
+}
+
+export interface HRScreeningSummary {
+  approved_min_lpa: number | null;
+  approved_max_lpa: number | null;
+  candidate_expected_lpa: number | null;
+  salary_alignment_status:
+    | 'NOT_CONFIGURED'
+    | 'NOT_DISCLOSED'
+    | 'OUTSIDE_BAND'
+    | 'BELOW_BAND'
+    | 'WITHIN_BAND';
+  salary_evidence: string | null;
+  max_notice_days: number;
+  candidate_notice_days: number | null;
+  notice_alignment_status: 'NOT_DISCLOSED' | 'EXCEEDS_POLICY' | 'ALIGNED';
+  notice_evidence: string | null;
+  policy_configured: boolean;
+  red_flags: HRScreeningRedFlag[];
+  human_checkpoint_required: boolean;
+  checkpoint_reasons: string[];
 }
 
 export interface InterviewSessionHistoryItem {

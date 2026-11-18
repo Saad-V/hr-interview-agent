@@ -24,6 +24,7 @@ from app.repositories.job_description_repository import JobDescriptionRepository
 from app.core.config import settings
 from app.core.interview_design import (
     RUBRIC_VERSION,
+    calculate_hr_scorecard,
     calculate_report_scores,
     recommendation_for_score,
 )
@@ -40,7 +41,13 @@ from app.services.answer_evaluation_service import evaluate_answer
 from app.schemas.conversation_turn import ConversationTurnCreate
 from app.repositories.report_repository import ReportRepository
 from app.services.interview_report_service import generate_interview_report
-from app.schemas.report import InterviewReportResponse, ReportCreate
+from app.schemas.report import (
+    HRScorecard,
+    HRScreeningSummary,
+    InterviewReportResponse,
+    ReportCreate,
+)
+from app.services.hr_screening_service import build_hr_screening_result
 
 interview_repository = InterviewRepository()
 resume_repository = ResumeRepository()
@@ -481,11 +488,34 @@ def submit_answer(
             )
 
         try:
+            answer_records = [
+                {
+                    "turn_number": turn.turn_number,
+                    "section_title": (turn.exchange_json or {}).get(
+                        "section_title",
+                        "",
+                    ),
+                    "evaluation": turn.evaluation_json or {},
+                }
+                for turn in previous_turns
+            ] + [{
+                "turn_number": turn_number,
+                "section_title": section_title,
+                "evaluation": evaluation_json,
+            }]
             calculated_scores = calculate_report_scores(
-                [
-                    *(turn.evaluation_json or {} for turn in previous_turns),
-                    evaluation_json,
-                ]
+                [answer["evaluation"] for answer in answer_records]
+            )
+            scorecard = HRScorecard.model_validate(
+                calculate_hr_scorecard(answer_records)
+            )
+            screening_summary = HRScreeningSummary.model_validate(
+                build_hr_screening_result(
+                    answer_records,
+                    min_band_lpa=settings.hr_salary_min_lpa,
+                    max_band_lpa=settings.hr_salary_max_lpa,
+                    max_notice_days=settings.hr_notice_max_days,
+                )
             )
         except ValueError as exc:
             raise HTTPException(
@@ -503,14 +533,21 @@ def submit_answer(
                 for turn in previous_turns
             ] + [{"exchange": answer_exchange, "evaluation": evaluation_json}],
         )
-        overall_score = float(calculated_scores["overall_score"])
+        overall_score = scorecard.weighted_score_percentage
         report_data = {
             "rubric_version": RUBRIC_VERSION,
             **calculated_scores,
+            "overall_score": overall_score,
+            "unweighted_overall_score": calculated_scores["overall_score"],
+            "scorecard": scorecard.model_dump(mode="json"),
+            "screening_summary": screening_summary.model_dump(mode="json"),
             "strengths": narrative.strengths,
             "areas_for_improvement": narrative.areas_for_improvement,
             "summary": narrative.summary,
-            "recommendation": recommendation_for_score(overall_score),
+            "recommendation": recommendation_for_score(
+                overall_score,
+                human_checkpoint_required=screening_summary.human_checkpoint_required,
+            ),
         }
         report = InterviewReportResponse.model_validate(report_data)
 

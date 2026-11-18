@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
 import { Link, useParams } from 'react-router-dom';
 import { sessionHistoryService } from '../services/sessionHistoryService';
+import ATSExportButton from '../components/ATSExportButton';
 
 function getErrorMessage(error: unknown) {
   if (axios.isAxiosError(error)) {
@@ -114,8 +115,51 @@ export default function SessionDetailPage() {
                 <span className="text-text-muted">Recommendation: </span>
                 {session.report.recommendation}
               </p>
+              {session.report.screening_summary?.human_checkpoint_required && (
+                <p className="mt-3 text-sm font-medium text-danger" role="status">
+                  Human review is required before acting on this recommendation.
+                </p>
+              )}
+              {session.report.rubric_version === 'hr-rubric-v1' && (
+                <div className="mt-5">
+                  <ATSExportButton sessionId={session.id} />
+                </div>
+              )}
             </div>
           </section>
+
+          {session.report.scorecard && (
+            <section className="border-b border-border py-8">
+              <p className="eyebrow text-text-muted">Weighted HR stage scorecard</p>
+              <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                {session.report.scorecard.sections.map((section) => (
+                  <div key={section.category}>
+                    <div className="mb-2 flex items-start justify-between gap-3 text-sm">
+                      <span>{section.title}</span>
+                      <span className="mono shrink-0 text-text-secondary">
+                        {Math.round(section.score_percentage)}% · {section.weight}%
+                      </span>
+                    </div>
+                    <div className="score-bar" aria-label={`${section.title}: ${section.score_percentage} percent`}>
+                      <span style={{ width: `${Math.min(100, Math.max(0, section.score_percentage))}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {session.report.screening_summary?.human_checkpoint_required && (
+                <div className="mt-5 rounded-lg border border-danger/30 bg-danger/10 p-4">
+                  <p className="text-sm font-medium text-danger" role="status">
+                    Human review required
+                  </p>
+                  <ul className="mt-2 space-y-1 text-sm text-danger">
+                    {session.report.screening_summary.checkpoint_reasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          )}
 
           <section className="grid gap-8 border-b border-border py-8 sm:grid-cols-2">
             <div>

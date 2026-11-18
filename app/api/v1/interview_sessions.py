@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
@@ -28,6 +28,7 @@ from app.services.interview_service import (
 )
 from app.services.interview_service import start_interview
 from app.services.interview_service import submit_answer as submit_answer_service
+from app.services.ats_export_service import export_ats_csv
 
 router = APIRouter(
     prefix="/interview-sessions",
@@ -96,6 +97,31 @@ def get_interview_session_turns(
         db=db,
         interview_session_id=session_id,
         user_id=current_user.id,
+    )
+
+
+@router.get(
+    "/{session_id}/ats-export",
+    response_class=Response,
+)
+def export_interview_scorecard_to_ats(
+    session_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    csv_content = export_ats_csv(
+        db,
+        interview_session_id=session_id,
+        user_id=current_user.id,
+    )
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="hr-scorecard-{session_id}.csv"'
+            )
+        },
     )
 
 

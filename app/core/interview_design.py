@@ -1,5 +1,6 @@
 from enum import Enum
 import re
+from typing import Literal, TypedDict
 
 from app.core.enums import InterviewDifficulty
 
@@ -31,6 +32,30 @@ RUBRIC_MAX_SCORES = {
     "REASONING": 2,
     "COMMUNICATION": 2,
 }
+SalaryAlignmentStatus = Literal[
+    "NOT_DISCLOSED",
+    "OUTSIDE_BAND",
+    "BELOW_BAND",
+    "WITHIN_BAND",
+]
+NoticeAlignmentStatus = Literal["NOT_DISCLOSED", "EXCEEDS_POLICY", "ALIGNED"]
+
+
+class BandLookupResult(TypedDict):
+    approved_min_lpa: float
+    approved_max_lpa: float
+    candidate_expected_lpa: float | None
+    salary_alignment_status: SalaryAlignmentStatus
+    max_notice_days: int
+    candidate_notice_days: int | None
+    notice_alignment_status: NoticeAlignmentStatus
+
+
+class HumanCheckpointResult(TypedDict):
+    human_checkpoint_required: bool
+    checkpoint_reasons: list[str]
+
+
 RUBRIC_CRITERION_LABELS = {
     "ACCURACY": "STAR Evidence & Factual Verification",
     "COVERAGE": "Motivation & Role Alignment",
@@ -182,7 +207,7 @@ def band_lookup_tool(
     max_band_lpa: float,
     stated_notice_days: int | None = None,
     max_notice_days: int = 60,
-) -> dict[str, float | int | str | None]:
+) -> BandLookupResult:
     if min_band_lpa > max_band_lpa:
         raise ValueError("Minimum salary band must not exceed the maximum band.")
     if expected_ctc_lpa is not None and expected_ctc_lpa < 0:
@@ -224,7 +249,7 @@ def evaluate_human_checkpoint(
     salary_alignment_status: str,
     notice_alignment_status: str,
     red_flags: list[dict],
-) -> dict[str, bool | list[str]]:
+) -> HumanCheckpointResult:
     reasons = []
     if salary_alignment_status == "OUTSIDE_BAND":
         reasons.append(
@@ -346,4 +371,90 @@ def calculate_report_scores(evaluations: list[dict]) -> dict[str, int | float]:
         "total_awarded_score": total_awarded,
         "total_maximum_score": total_maximum,
         "question_count": question_count,
+    }
+
+
+def calculate_hr_scorecard(answers: list[dict]) -> dict[str, object]:
+    if not answers:
+        raise ValueError("Cannot calculate an HR scorecard without evaluated answers.")
+
+    section_awarded = {category: 0 for category in SECTION_WEIGHTS}
+    section_answer_counts = {category: 0 for category in SECTION_WEIGHTS}
+    criterion_awarded = {criterion_id: 0 for criterion_id in RUBRIC_MAX_SCORES}
+
+    category_by_title = {
+        title: category for category, title in SECTION_TITLES.items()
+    }
+    for answer in answers:
+        category = category_by_title.get(answer.get("section_title"))
+        if category is None:
+            raise ValueError("An answer has an unknown HR workflow section title.")
+        evaluation = answer.get("evaluation")
+        if not isinstance(evaluation, dict):
+            raise ValueError("Every scorecard answer must include an evaluation.")
+        criteria = evaluation.get("criteria")
+        if not isinstance(criteria, list):
+            raise ValueError("Every scorecard answer must include rubric criteria.")
+
+        section_answer_counts[category] += 1
+        seen_criteria = set()
+        for criterion in criteria:
+            if not isinstance(criterion, dict):
+                raise ValueError("Scorecard rubric criteria must be objects.")
+            criterion_id = criterion.get("criterion_id")
+            awarded_score = criterion.get("awarded_score")
+            if (
+                criterion_id not in RUBRIC_MAX_SCORES
+                or criterion_id in seen_criteria
+            ):
+                raise ValueError("Scorecard contains an invalid or duplicate criterion.")
+            if type(awarded_score) is not int or not (
+                0 <= awarded_score <= RUBRIC_MAX_SCORES[criterion_id]
+            ):
+                raise ValueError("Scorecard contains an invalid rubric score.")
+            section_awarded[category] += awarded_score
+            criterion_awarded[criterion_id] += awarded_score
+            seen_criteria.add(criterion_id)
+        if seen_criteria != set(RUBRIC_MAX_SCORES):
+            raise ValueError("Every scorecard answer must include every rubric criterion.")
+
+    sections = []
+    weighted_score = 0.0
+    for category, weight in SECTION_WEIGHTS.items():
+        question_count = section_answer_counts[category]
+        if question_count == 0:
+            raise ValueError(f"The {category} HR section has no evaluated answers.")
+        maximum_score = question_count * QUESTION_MAX_SCORE
+        score_percentage = round(
+            section_awarded[category] * 100 / maximum_score,
+            2,
+        )
+        weighted_score += score_percentage * weight / 100
+        sections.append({
+            "category": category,
+            "title": SECTION_TITLES[category],
+            "weight": weight,
+            "score_percentage": score_percentage,
+            "points_awarded": section_awarded[category],
+            "points_maximum": maximum_score,
+        })
+
+    criteria = [
+        {
+            "criterion_id": criterion_id,
+            "label": RUBRIC_CRITERION_LABELS[criterion_id],
+            "points_awarded": criterion_awarded[criterion_id],
+            "points_maximum": len(answers) * maximum_score,
+            "score_percentage": round(
+                criterion_awarded[criterion_id] * 100
+                / (len(answers) * maximum_score),
+                2,
+            ),
+        }
+        for criterion_id, maximum_score in RUBRIC_MAX_SCORES.items()
+    ]
+    return {
+        "weighted_score_percentage": round(weighted_score, 2),
+        "sections": sections,
+        "criteria": criteria,
     }

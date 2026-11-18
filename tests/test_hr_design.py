@@ -1,3 +1,6 @@
+import csv
+import io
+
 import pytest
 
 from app.ai.prompts import (
@@ -19,13 +22,16 @@ from app.core.interview_design import (
     SECTION_TITLES,
     SECTION_WEIGHTS,
     band_lookup_tool,
+    calculate_hr_scorecard,
     evaluate_human_checkpoint,
     recommendation_for_score,
     section_question_counts,
     validate_prohibited_question_guardrail,
 )
 from app.schemas.screening import CandidateScreeningFacts, EvidenceBackedRedFlag
+from app.services.ats_export_service import build_ats_export_csv
 from app.services.answer_evaluation_service import _validate_screening_facts
+from app.services.hr_screening_service import build_hr_screening_result
 
 
 def _blueprint_payload() -> dict:
@@ -233,3 +239,146 @@ def test_settings_require_salary_band_bounds_to_be_configured_together():
             hr_salary_min_lpa=20,
             hr_salary_max_lpa=10,
         )
+
+
+def test_hr_scorecard_applies_stage_weights_to_stage_percentages():
+    scores_by_section = {
+        "INTRODUCTION": [4, 2, 2, 2],
+        "PROJECTS": [4, 2, 1, 1],
+        "TECHNICAL": [2, 1, 1, 2],
+        "BEHAVIORAL": [1, 1, 0, 2],
+    }
+    answers = []
+    for category, scores in scores_by_section.items():
+        answers.append({
+            "section_title": SECTION_TITLES[category],
+            "evaluation": {
+                "criteria": [
+                    {
+                        "criterion_id": criterion_id,
+                        "awarded_score": scores[index],
+                    }
+                    for index, criterion_id in enumerate(RUBRIC_MAX_SCORES)
+                ]
+            },
+        })
+
+    scorecard = calculate_hr_scorecard(answers)
+    assert scorecard["weighted_score_percentage"] == 71.0
+    assert [
+        section["category"] for section in scorecard["sections"]
+    ] == list(SECTION_WEIGHTS)
+
+
+def test_hr_screening_checks_salary_notice_and_evidence_flags():
+    result = build_hr_screening_result(
+        [
+            {
+                "turn_number": 4,
+                "section_title": SECTION_TITLES["BEHAVIORAL"],
+                "evaluation": {
+                    "screening_facts": {
+                        "expected_ctc_lpa": 35.0,
+                        "salary_evidence": "My expected CTC is 35 LPA",
+                        "stated_notice_days": 75,
+                        "notice_evidence": "I have a 75 days notice",
+                        "red_flags": [
+                            {
+                                "description": "Conflicting delivery timelines.",
+                                "evidence": "The release was in May, then I said June.",
+                            }
+                        ],
+                    }
+                },
+            }
+        ],
+        min_band_lpa=15,
+        max_band_lpa=30,
+        max_notice_days=60,
+    )
+    assert result["salary_alignment_status"] == "OUTSIDE_BAND"
+    assert result["notice_alignment_status"] == "EXCEEDS_POLICY"
+    assert result["human_checkpoint_required"] is True
+    assert len(result["red_flags"]) == 1
+
+
+def test_missing_salary_band_is_visible_and_does_not_claim_alignment():
+    result = build_hr_screening_result(
+        [],
+        min_band_lpa=None,
+        max_band_lpa=None,
+        max_notice_days=60,
+    )
+    assert result["salary_alignment_status"] == "NOT_CONFIGURED"
+    assert result["policy_configured"] is False
+    assert result["human_checkpoint_required"] is False
+
+
+def test_notice_limit_still_triggers_without_a_configured_salary_band():
+    result = build_hr_screening_result(
+        [
+            {
+                "turn_number": 1,
+                "section_title": SECTION_TITLES["INTRODUCTION"],
+                "evaluation": {
+                    "screening_facts": {
+                        "stated_notice_days": 75,
+                        "notice_evidence": "My notice is 75 days",
+                    }
+                },
+            }
+        ],
+        min_band_lpa=None,
+        max_band_lpa=None,
+        max_notice_days=60,
+    )
+    assert result["salary_alignment_status"] == "NOT_CONFIGURED"
+    assert result["notice_alignment_status"] == "EXCEEDS_POLICY"
+    assert result["human_checkpoint_required"] is True
+
+
+def test_ats_export_contains_summary_without_answer_evidence():
+    content = build_ats_export_csv(
+        candidate_reference="session-123",
+        completed_at="2026-11-19T00:00:00+00:00",
+        difficulty_pool="MEDIUM",
+        report_data={
+            "overall_score": 78.25,
+            "recommendation": "Pass to Final Round",
+            "screening_summary": {
+                "human_checkpoint_required": False,
+                "checkpoint_reasons": [],
+                "approved_min_lpa": 15,
+                "approved_max_lpa": 30,
+                "candidate_expected_lpa": 24,
+                "salary_alignment_status": "WITHIN_BAND",
+                "max_notice_days": 60,
+                "candidate_notice_days": 45,
+                "notice_alignment_status": "ALIGNED",
+                "red_flags": [
+                    {
+                        "description": "Sensitive internal concern",
+                        "evidence": "Do not export this answer quote",
+                    }
+                ],
+            },
+            "scorecard": {
+                "sections": [
+                    {
+                        "category": "INTRODUCTION",
+                        "score_percentage": 80,
+                        "weight": 20,
+                    }
+                ]
+            },
+        },
+    )
+    row = next(csv.DictReader(io.StringIO(content)))
+    assert row["candidate_reference"] == "session-123"
+    assert row["weighted_score"] == "78.25"
+    assert row["candidate_expected_lpa"] == "24"
+    assert row["salary_alignment_status"] == "WITHIN_BAND"
+    assert row["candidate_notice_days"] == "45"
+    assert '"INTRODUCTION"' in row["weighted_stage_scores"]
+    assert "Do not export this answer quote" not in content
+    assert row["evidence_backed_red_flag_count"] == "1"
