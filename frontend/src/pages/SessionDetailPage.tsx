@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
 import { Link, useParams } from 'react-router-dom';
@@ -28,7 +27,6 @@ function getErrorMessage(error: unknown) {
 
 export default function SessionDetailPage() {
   const { sessionId } = useParams();
-  const [pushedToAts, setPushedToAts] = useState(false);
   const sessionQuery = useQuery({
     queryKey: ['interview-history', sessionId],
     queryFn: () => {
@@ -85,7 +83,7 @@ export default function SessionDetailPage() {
           {session.status.replaceAll('_', ' ')} · {session.difficulty}
         </p>
         <h1 className="editorial mt-3 text-5xl sm:text-6xl">
-          05 / HR Scorecard &amp; Interviewer Notes
+          HR Scorecard &amp; Interviewer Notes
         </h1>
         <p className="mt-3 text-sm text-text-secondary">
           {new Intl.DateTimeFormat(undefined, {
@@ -104,18 +102,6 @@ export default function SessionDetailPage() {
             >
               Export Scorecard (PDF / Print)
             </button>
-            <button
-              className="primary-action"
-              onClick={() => setPushedToAts(true)}
-              type="button"
-            >
-              Push to ATS
-            </button>
-            {pushedToAts && (
-              <span className="text-xs text-text-muted" role="status">
-                Pushed to ATS ✓ (Confidential)
-              </span>
-            )}
           </div>
         )}
       </header>

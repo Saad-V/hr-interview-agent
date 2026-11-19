@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RotateCcw } from 'lucide-react';
 import { useInterview, useInterviewDispatch } from '../hooks/useInterview';
@@ -9,7 +8,6 @@ export default function ReportPage() {
   const navigate = useNavigate();
   const { report, sessionId } = useInterview();
   const dispatch = useInterviewDispatch();
-  const [pushedToAts, setPushedToAts] = useState(false);
 
   const handleNewInterview = () => {
     dispatch({ type: 'RESET' });
@@ -36,7 +34,7 @@ export default function ReportPage() {
           <div>
             <p className="eyebrow text-text-muted">Confidential HR screening report</p>
             <h1 className="editorial mt-5 text-5xl sm:text-6xl">
-              05 / HR Scorecard &amp; Interviewer Notes
+              HR Scorecard &amp; Interviewer Notes
             </h1>
             <p className="mt-3 max-w-xl text-text-secondary">
               Evidence-backed stage scores and policy checks to support a consistent human review.
@@ -50,18 +48,6 @@ export default function ReportPage() {
             >
               Export Scorecard (PDF / Print)
             </button>
-            <button
-              className="primary-action"
-              onClick={() => setPushedToAts(true)}
-              type="button"
-            >
-              Push to ATS
-            </button>
-            {pushedToAts && (
-              <p className="w-full text-right text-xs text-text-muted" role="status">
-                Pushed to ATS ✓ (Confidential)
-              </p>
-            )}
           </div>
         </div>
       </header>

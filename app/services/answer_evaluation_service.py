@@ -68,12 +68,16 @@ def _validate_screening_facts(
         if facts.salary_evidence is None:
             raise ValueError("Expected CTC requires answer evidence.")
         evidence = validate_evidence(facts.salary_evidence, "Expected CTC")
-        amount = re.escape(f"{facts.expected_ctc_lpa:g}")
-        if not re.search(rf"(?<!\d){amount}0*(?!\d)", evidence) or not re.search(
-            r"\b(?:lpa|lakhs?|lacs?)\b",
-            evidence,
-            re.IGNORECASE,
-        ):
+        salary_anchor = _find_salary_evidence(
+            candidate_answer,
+            facts.expected_ctc_lpa,
+        )
+        normalized_anchor = (
+            " ".join(salary_anchor.casefold().split())
+            if salary_anchor is not None
+            else ""
+        )
+        if not normalized_anchor or normalized_anchor not in evidence:
             raise ValueError(
                 "Expected CTC must be supported by a numeric LPA/lakh answer excerpt."
             )
