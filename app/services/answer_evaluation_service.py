@@ -69,12 +69,19 @@ def _validate_red_flag_evidence(
     red_flags: list[RedFlagItemSchema],
     candidate_answer: str,
 ) -> list[RedFlagResponse]:
+    normalized_answer = " ".join(candidate_answer.casefold().split())
     validated = []
     for red_flag in red_flags:
-        if not red_flag.evidence or red_flag.evidence not in candidate_answer:
-            raise ValueError("Red flag evidence must quote the candidate answer.")
-        if not red_flag.category.strip() or not red_flag.description.strip():
-            raise ValueError("Red flags must include a category and description.")
+        normalized_evidence = " ".join(
+            red_flag.evidence.casefold().split()
+        ).strip("\"'")
+        if (
+            not normalized_evidence
+            or normalized_evidence not in normalized_answer
+            or not red_flag.category.strip()
+            or not red_flag.description.strip()
+        ):
+            continue
         validated.append(
             RedFlagResponse(
                 category=red_flag.category,

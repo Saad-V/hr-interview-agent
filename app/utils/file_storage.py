@@ -3,6 +3,7 @@ import shutil
 import uuid
 
 from fastapi import UploadFile
+from docx import Document
 
 STORAGE_ROOT = Path("storage")
 
@@ -57,4 +58,23 @@ def save_job_description_file(
         )
     return job_description_path
 
+
+def save_job_description_text_file(
+    session_id: uuid.UUID,
+    text: str,
+) -> Path:
+    job_description_folder = (
+        STORAGE_ROOT
+        / "job_descriptions"
+        / str(session_id)
+    )
+    job_description_folder.mkdir(parents=True, exist_ok=True)
+    job_description_path = job_description_folder / "job_description.docx"
+
+    document = Document()
+    for line in text.splitlines():
+        document.add_paragraph(line)
+    document.save(job_description_path)
+
+    return job_description_path
 

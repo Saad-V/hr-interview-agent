@@ -1,5 +1,8 @@
 import csv
 import io
+from pathlib import Path
+import uuid
+from unittest.mock import Mock
 
 import pytest
 
@@ -36,12 +39,17 @@ from app.core.interview_design import (
 )
 from app.schemas.screening import CandidateScreeningFacts, EvidenceBackedRedFlag
 from app.schemas.report import InterviewReportResponse
+from app.schemas.job_description import HRPolicyConfigRequest
 from app.services.ats_export_service import build_ats_export_csv
 from app.services.answer_evaluation_service import (
     _validate_red_flag_evidence,
     _validate_screening_facts,
 )
 from app.services.hr_screening_service import build_hr_screening_result
+from app.services.document_parser_service import extract_text
+from app.services.interview_service import _build_hr_policy_screening
+from app.services.job_description_service import create_hr_policy_job_description
+from app.utils import file_storage
 
 
 def _blueprint_payload() -> dict:
@@ -326,22 +334,120 @@ def test_notice_extraction_rejects_mismatched_converted_months():
         )
 
 
-def test_categorized_red_flag_requires_exact_answer_quote():
-    red_flag = RedFlagItemSchema(
+def test_red_flag_validation_normalizes_quotes_and_discards_hallucinations():
+    valid_flag = RedFlagItemSchema(
         category="BACKGROUND_GAP",
         description="The candidate gives conflicting timelines.",
-        evidence="I left in March.",
+        evidence="i LEFT in   March.",
     )
-    assert _validate_red_flag_evidence(
-        [red_flag],
+    unsupported_flag = RedFlagItemSchema(
+        category="CULTURE_CONCERN",
+        description="Unsupported concern.",
+        evidence="I refused to work with the team.",
+    )
+    validated = _validate_red_flag_evidence(
+        [valid_flag, unsupported_flag],
         "I left in March. I started my next role in April.",
-    )[0].category == "BACKGROUND_GAP"
+    )
+    assert len(validated) == 1
+    assert validated[0].category == "BACKGROUND_GAP"
 
-    with pytest.raises(ValueError, match="must quote"):
-        _validate_red_flag_evidence(
-            [red_flag],
-            "I left in April.",
+
+def test_hr_policy_submission_saves_extractable_docx_and_job_description(
+    tmp_path,
+    monkeypatch,
+):
+    session_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    db = Mock()
+    db.query.return_value.filter_by.return_value.first.return_value = object()
+    repository = Mock()
+    repository.create_or_update.side_effect = lambda _db, document: document
+
+    monkeypatch.setattr(file_storage, "STORAGE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "app.services.job_description_service.repository",
+        repository,
+    )
+
+    policy = HRPolicyConfigRequest(
+        role_title="HR Coordinator",
+        min_salary_lpa=6,
+        max_salary_lpa=12,
+        max_notice_period_days=30,
+        work_location="Hybrid / Bengaluru",
+        role_requirements="Coordinate interviews.\nMaintain candidate records.",
+    )
+    result = create_hr_policy_job_description(
+        db=db,
+        interview_session_id=session_id,
+        policy=policy,
+        owner_id=owner_id,
+    )
+
+    assert Path(result.storage_path).suffix == ".docx"
+    extracted_text = extract_text(Path(result.storage_path))
+    assert "Role title: HR Coordinator" in extracted_text
+    assert "Approved salary band: 6 to 12 LPA" in extracted_text
+    assert "Maximum notice period: 30 days" in extracted_text
+    assert "Coordinate interviews." in extracted_text
+    assert result.raw_text == extracted_text
+    repository.create_or_update.assert_called_once()
+
+
+def test_final_hr_screening_uses_job_policy_and_aggregates_all_turns():
+    salary_band_check, red_flags, summary, checkpoint_required, reasons = (
+        _build_hr_policy_screening(
+            [
+                {
+                    "extracted_expected_ctc_lpa": 25,
+                    "extracted_current_ctc_lpa": 18,
+                    "extracted_notice_period_days": 45,
+                    "screening_facts": {
+                        "salary_evidence": "My expected CTC is 25 LPA.",
+                        "notice_evidence": "My notice is 45 days.",
+                    },
+                    "red_flags": [
+                        {
+                            "category": "BACKGROUND_GAP",
+                            "description": "Timeline conflict.",
+                            "evidence": "I left in March.",
+                        }
+                    ],
+                },
+                {
+                    "extracted_expected_ctc_lpa": None,
+                    "extracted_notice_period_days": None,
+                    "screening_facts": {},
+                    "red_flags": [
+                        {
+                            "category": "CULTURE_CONCERN",
+                            "description": "Hostile description of collaboration.",
+                            "evidence": "I refused to work with them.",
+                        }
+                    ],
+                },
+            ],
+            [2, 3],
+            {
+                "hr_policy": {
+                    "min_salary_lpa": 10,
+                    "max_salary_lpa": 20,
+                    "max_notice_period_days": 30,
+                    "work_location": "Onsite",
+                }
+            },
         )
+    )
+
+    assert salary_band_check["salary_alignment_status"] == "OUTSIDE_BAND"
+    assert salary_band_check["notice_alignment_status"] == "EXCEEDS_POLICY"
+    assert salary_band_check["candidate_current_ctc_lpa"] == 18
+    assert [flag["turn_number"] for flag in red_flags] == [2, 3]
+    assert checkpoint_required is True
+    assert len(reasons) == 3
+    assert summary.policy_configured is True
+    assert summary.salary_evidence == "My expected CTC is 25 LPA."
 
 
 def test_settings_require_salary_band_bounds_to_be_configured_together():

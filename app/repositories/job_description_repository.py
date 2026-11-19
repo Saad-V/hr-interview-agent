@@ -27,6 +27,31 @@ class JobDescriptionRepository:
             db.rollback()
             raise
         return job_description_model
+
+    def create_or_update(
+        self,
+        db: Session,
+        job_description: JobDescriptionCreate,
+    ) -> JobDescription:
+        existing = self.get_by_session_id(
+            db,
+            job_description.interview_session_id,
+        )
+        if existing is None:
+            return self.create(db, job_description)
+
+        existing.original_filename = job_description.original_filename
+        existing.storage_path = job_description.storage_path
+        existing.mime_type = job_description.mime_type
+        existing.file_size = job_description.file_size
+        existing.raw_text = job_description.raw_text
+        try:
+            db.commit()
+            db.refresh(existing)
+        except Exception:
+            db.rollback()
+            raise
+        return existing
     
     def get_by_session_id(
             self,

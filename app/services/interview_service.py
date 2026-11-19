@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from google.genai import errors
+from app.ai.schemas import HRPolicyBandSchema
 from app.models.interview_session import InterviewSession
 from app.repositories.candidate_profile_repository import CandidateProfileRepository
 from app.repositories.interview_blueprint_repository import InterviewBlueprintRepository
@@ -24,8 +25,10 @@ from app.repositories.job_description_repository import JobDescriptionRepository
 from app.core.config import settings
 from app.core.interview_design import (
     RUBRIC_VERSION,
+    band_lookup_tool,
     calculate_hr_scorecard,
     calculate_report_scores,
+    evaluate_human_checkpoint,
     recommendation_for_score,
 )
 from app.schemas.candidate_profile import CandidateProfileCreate
@@ -47,7 +50,6 @@ from app.schemas.report import (
     InterviewReportResponse,
     ReportCreate,
 )
-from app.services.hr_screening_service import build_hr_screening_result
 
 interview_repository = InterviewRepository()
 resume_repository = ResumeRepository()
@@ -58,6 +60,96 @@ job_profile_repository = JobProfileRepository()
 interview_blueprint_repository = InterviewBlueprintRepository()
 conversation_turn_repository = ConversationTurnRepository()
 report_repository = ReportRepository()
+
+
+def _build_hr_policy_screening(
+    evaluated_turns: list[dict],
+    turn_numbers: list[int],
+    job_profile_json: dict,
+) -> tuple[dict, list[dict], HRScreeningSummary, bool, list[str]]:
+    if len(evaluated_turns) != len(turn_numbers):
+        raise ValueError("Each screening evaluation must have a turn number.")
+
+    expected_ctc_lpa = None
+    current_ctc_lpa = None
+    notice_period_days = None
+    salary_evidence = None
+    notice_evidence = None
+    for evaluation in reversed(evaluated_turns):
+        if not isinstance(evaluation, dict):
+            raise ValueError("Every screening evaluation must be an object.")
+        screening_facts = evaluation.get("screening_facts") or {}
+        if not isinstance(screening_facts, dict):
+            raise ValueError("Screening facts must be an object.")
+
+        if expected_ctc_lpa is None:
+            expected_ctc_lpa = evaluation.get("extracted_expected_ctc_lpa")
+            if expected_ctc_lpa is None:
+                expected_ctc_lpa = screening_facts.get("expected_ctc_lpa")
+            if expected_ctc_lpa is not None:
+                salary_evidence = screening_facts.get("salary_evidence")
+
+        if current_ctc_lpa is None:
+            current_ctc_lpa = evaluation.get("extracted_current_ctc_lpa")
+
+        if notice_period_days is None:
+            notice_period_days = evaluation.get("extracted_notice_period_days")
+            if notice_period_days is None:
+                notice_period_days = screening_facts.get("stated_notice_days")
+            if notice_period_days is not None:
+                notice_evidence = screening_facts.get("notice_evidence")
+
+    red_flags = []
+    for evaluation, turn_number in zip(evaluated_turns, turn_numbers):
+        screening_facts = evaluation.get("screening_facts") or {}
+        flags = evaluation.get("red_flags") or screening_facts.get("red_flags", [])
+        if not isinstance(flags, list):
+            raise ValueError("Screening red flags must be a list.")
+        for flag in flags:
+            if not isinstance(flag, dict) or not flag.get("evidence"):
+                raise ValueError(
+                    "Every screening red flag must include answer evidence."
+                )
+            red_flags.append({**flag, "turn_number": turn_number})
+
+    hr_policy = HRPolicyBandSchema.model_validate(
+        (job_profile_json or {}).get("hr_policy") or {}
+    )
+    salary_band_check = {
+        **band_lookup_tool(
+            expected_ctc_lpa=expected_ctc_lpa,
+            min_band_lpa=hr_policy.min_salary_lpa,
+            max_band_lpa=hr_policy.max_salary_lpa,
+            stated_notice_days=notice_period_days,
+            max_notice_days=hr_policy.max_notice_period_days,
+        ),
+        "candidate_current_ctc_lpa": current_ctc_lpa,
+        "work_location": hr_policy.work_location,
+    }
+    checkpoint = evaluate_human_checkpoint(
+        salary_alignment_status=salary_band_check["salary_alignment_status"],
+        notice_alignment_status=salary_band_check["notice_alignment_status"],
+        red_flags=red_flags,
+    )
+    human_checkpoint_required = checkpoint["human_checkpoint_required"]
+    human_checkpoint_reasons = checkpoint["checkpoint_reasons"]
+    screening_summary = HRScreeningSummary.model_validate({
+        **salary_band_check,
+        "salary_evidence": salary_evidence,
+        "notice_evidence": notice_evidence,
+        "policy_configured": True,
+        "red_flags": red_flags,
+        "human_checkpoint_required": human_checkpoint_required,
+        "checkpoint_reasons": human_checkpoint_reasons,
+    })
+    return (
+        salary_band_check,
+        red_flags,
+        screening_summary,
+        human_checkpoint_required,
+        human_checkpoint_reasons,
+    )
+
 
 def create_interview(
         db: Session,
@@ -490,6 +582,14 @@ def submit_answer(
             )
 
         try:
+            evaluated_turns = [
+                *(turn.evaluation_json or {} for turn in previous_turns),
+                evaluation_json,
+            ]
+            turn_numbers = [
+                *(turn.turn_number for turn in previous_turns),
+                turn_number,
+            ]
             answer_records = [
                 {
                     "turn_number": turn.turn_number,
@@ -511,13 +611,17 @@ def submit_answer(
             scorecard = HRScorecard.model_validate(
                 calculate_hr_scorecard(answer_records)
             )
-            screening_summary = HRScreeningSummary.model_validate(
-                build_hr_screening_result(
-                    answer_records,
-                    min_band_lpa=settings.hr_salary_min_lpa,
-                    max_band_lpa=settings.hr_salary_max_lpa,
-                    max_notice_days=settings.hr_notice_max_days,
-                )
+
+            (
+                salary_band_check,
+                red_flags,
+                screening_summary,
+                human_checkpoint_required,
+                human_checkpoint_reasons,
+            ) = _build_hr_policy_screening(
+                evaluated_turns,
+                turn_numbers,
+                job_profile_entry.profile_json or {},
             )
         except ValueError as exc:
             raise HTTPException(
@@ -536,17 +640,6 @@ def submit_answer(
             ] + [{"exchange": answer_exchange, "evaluation": evaluation_json}],
         )
         overall_score = scorecard.weighted_score_percentage
-        salary_band_check = {
-            "approved_min_lpa": screening_summary.approved_min_lpa,
-            "approved_max_lpa": screening_summary.approved_max_lpa,
-            "candidate_expected_lpa": screening_summary.candidate_expected_lpa,
-            "candidate_current_ctc_lpa": screening_summary.candidate_current_ctc_lpa,
-            "salary_alignment_status": screening_summary.salary_alignment_status,
-            "max_notice_days": screening_summary.max_notice_days,
-            "candidate_notice_days": screening_summary.candidate_notice_days,
-            "notice_alignment_status": screening_summary.notice_alignment_status,
-            "policy_configured": screening_summary.policy_configured,
-        }
         candidate_pools = {
             InterviewDifficulty.EASY: "Fresher (0 years)",
             InterviewDifficulty.MEDIUM: "Early-Career (1–3 years)",
@@ -560,9 +653,9 @@ def submit_answer(
             "scorecard": scorecard.model_dump(mode="json"),
             "screening_summary": screening_summary.model_dump(mode="json"),
             "salary_band_check": salary_band_check,
-            "red_flags": screening_summary.red_flags,
-            "human_checkpoint_required": screening_summary.human_checkpoint_required,
-            "human_checkpoint_reasons": screening_summary.checkpoint_reasons,
+            "red_flags": red_flags,
+            "human_checkpoint_required": human_checkpoint_required,
+            "human_checkpoint_reasons": human_checkpoint_reasons,
             "candidate_pool": candidate_pools[interview.difficulty],
             "strengths": narrative.strengths,
             "areas_for_improvement": narrative.areas_for_improvement,
