@@ -81,6 +81,23 @@ export interface InterviewReport {
   unweighted_overall_score?: number | null;
   scorecard?: HRScorecard | null;
   screening_summary?: HRScreeningSummary | null;
+  salary_band_check?: {
+    approved_min_lpa: number;
+    approved_max_lpa: number;
+    candidate_expected_lpa: number | null;
+    salary_alignment_status: string;
+    max_notice_days: number;
+    candidate_notice_days: number | null;
+    notice_alignment_status: string;
+  };
+  red_flags?: Array<{
+    category: string;
+    description: string;
+    evidence: string;
+    turn_number?: number;
+  }>;
+  human_checkpoint_required?: boolean;
+  human_checkpoint_reasons?: string[];
 }
 
 export interface HRSectionScore {

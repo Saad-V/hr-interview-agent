@@ -29,18 +29,42 @@ export default function SetupPage() {
   const dispatch = useInterviewDispatch();
 
   const [resumeFile, setResumeFile] = useState<File | null>(null);
-  const [jdFile, setJdFile] = useState<File | null>(null);
   const [difficulty, setDifficulty] = useState<InterviewDifficulty>(
     InterviewDifficulty.MEDIUM
+  );
+  const [roleTitle, setRoleTitle] = useState('Software Engineer');
+  const [minSalaryLpa, setMinSalaryLpa] = useState('7.0');
+  const [maxSalaryLpa, setMaxSalaryLpa] = useState('14.0');
+  const [maxNoticePeriodDays, setMaxNoticePeriodDays] = useState('30');
+  const [workLocation, setWorkLocation] = useState('Hybrid / Bengaluru');
+  const [roleRequirements, setRoleRequirements] = useState(
+    'Assess communication clarity, STAR project ownership, team collaboration, and compensation alignment.'
   );
   const [duration, setDuration] = useState(30);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isValid = resumeFile && jdFile && duration >= 10 && duration <= 120;
+  const minSalary = Number(minSalaryLpa);
+  const maxSalary = Number(maxSalaryLpa);
+  const noticeDays = Number(maxNoticePeriodDays);
+  const isValid = Boolean(
+    resumeFile &&
+      roleTitle.trim() &&
+      minSalaryLpa !== '' &&
+      maxSalaryLpa !== '' &&
+      Number.isFinite(minSalary) &&
+      Number.isFinite(maxSalary) &&
+      minSalary >= 0 &&
+      maxSalary > 0 &&
+      maxSalary >= minSalary &&
+      Number.isFinite(noticeDays) &&
+      noticeDays >= 0 &&
+      duration >= 10 &&
+      duration <= 120
+  );
 
   const handleStart = async () => {
-    if (!resumeFile || !jdFile) return;
+    if (!resumeFile || !isValid) return;
 
     setIsLoading(true);
     setError(null);
@@ -60,8 +84,15 @@ export default function SetupPage() {
       // 2. Upload resume
       await resumeService.uploadResume(session.id, resumeFile);
 
-      // 3. Upload job description
-      await jobDescriptionService.uploadJobDescription(session.id, jdFile);
+      // 3. Submit the approved HR policy as the interview's role brief
+      await jobDescriptionService.submitHrPolicy(session.id, {
+        role_title: roleTitle.trim(),
+        min_salary_lpa: minSalary,
+        max_salary_lpa: maxSalary,
+        max_notice_period_days: noticeDays,
+        work_location: workLocation.trim(),
+        role_requirements: roleRequirements.trim(),
+      });
 
       // Navigate to preparing
       navigate('/preparing');
@@ -91,12 +122,12 @@ export default function SetupPage() {
         >
           <div className="flex flex-wrap items-end justify-between gap-5">
             <div>
-              <p className="eyebrow text-text-muted">Structured HR screening</p>
+              <p className="eyebrow text-text-muted">05 / HR ROUND — INTERVIEWER AGENT</p>
               <h1 className="editorial mt-3 text-5xl md:text-6xl">
-                Set up an HR interview
+                Configure HR Screening Round
               </h1>
               <p className="mt-3 max-w-xl text-text-secondary">
-                Add the candidate&apos;s resume and job description to create a consistent, role-specific screening.
+                Upload the candidate resume and set the approved salary band, notice period policy, and experience tier.
               </p>
             </div>
             <Link
@@ -115,7 +146,7 @@ export default function SetupPage() {
           transition={{ staggerChildren: 0.1, delayChildren: 0.2 }}
           className="space-y-8"
         >
-          {/* Documents Section */}
+          {/* Candidate and HR policy */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -123,16 +154,19 @@ export default function SetupPage() {
             className="space-y-4"
           >
             <div className="mb-6">
-              <p className="eyebrow text-text-muted">01 — Your materials</p>
-              <h2 className="editorial mt-2 text-3xl">Two documents, one tailored interview.</h2>
+              <p className="eyebrow text-text-muted">01 — Candidate &amp; role policy</p>
+              <h2 className="editorial mt-2 text-3xl">Candidate resume and approved HR policy.</h2>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Resume */}
               <div className="card p-6">
-                <h3 className="mb-4 text-sm font-semibold text-text-primary">Resume <span className="text-text-muted">· Required</span></h3>
+                <h3 className="mb-4 text-sm font-semibold text-text-primary">
+                  Candidate Resume (PDF / DOCX) · Required
+                </h3>
                 <FileDropZone
                   label="Upload your resume"
+                  accept=".pdf,.docx"
                   file={resumeFile}
                   onFileSelect={setResumeFile}
                   onClear={() => setResumeFile(null)}
@@ -140,16 +174,102 @@ export default function SetupPage() {
                 />
               </div>
 
-              {/* Job Description */}
+              {/* HR Policy */}
               <div className="card p-6">
-                <h3 className="mb-4 text-sm font-semibold text-text-primary">Job description <span className="text-text-muted">· Required</span></h3>
-                <FileDropZone
-                  label="Upload the role description"
-                  file={jdFile}
-                  onFileSelect={setJdFile}
-                  onClear={() => setJdFile(null)}
-                  disabled={isLoading}
-                />
+                <h3 className="mb-5 text-sm font-semibold text-text-primary">
+                  HR Policy, Notice Period &amp; Salary Band Sheet
+                </h3>
+                <div className="space-y-4">
+                  <label className="form-label" htmlFor="role-title">
+                    Target Role Title
+                    <input
+                      id="role-title"
+                      className="form-control mt-2"
+                      value={roleTitle}
+                      onChange={(event) => setRoleTitle(event.target.value)}
+                      disabled={isLoading}
+                      required
+                    />
+                  </label>
+
+                  <fieldset>
+                    <legend className="form-label">Approved Salary Band (INR LPA)</legend>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="form-label" htmlFor="min-salary-lpa">
+                        Min LPA
+                        <input
+                          id="min-salary-lpa"
+                          className="form-control mt-2"
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={minSalaryLpa}
+                          onChange={(event) => setMinSalaryLpa(event.target.value)}
+                          disabled={isLoading}
+                          required
+                        />
+                      </label>
+                      <label className="form-label" htmlFor="max-salary-lpa">
+                        Max LPA
+                        <input
+                          id="max-salary-lpa"
+                          className="form-control mt-2"
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={maxSalaryLpa}
+                          onChange={(event) => setMaxSalaryLpa(event.target.value)}
+                          disabled={isLoading}
+                          required
+                        />
+                      </label>
+                    </div>
+                    {maxSalaryLpa !== '' && minSalaryLpa !== '' && maxSalary < minSalary && (
+                      <p className="mt-2 text-sm text-danger" role="alert">
+                        Maximum salary must be greater than or equal to minimum salary.
+                      </p>
+                    )}
+                  </fieldset>
+
+                  <label className="form-label" htmlFor="max-notice-days">
+                    Max Notice Period Allowed (Days)
+                    <select
+                      id="max-notice-days"
+                      className="form-control mt-2"
+                      value={maxNoticePeriodDays}
+                      onChange={(event) => setMaxNoticePeriodDays(event.target.value)}
+                      disabled={isLoading}
+                    >
+                      <option value="0">0 / Immediate</option>
+                      <option value="15">15 Days</option>
+                      <option value="30">30 Days</option>
+                      <option value="60">60 Days</option>
+                      <option value="90">90 Days</option>
+                    </select>
+                  </label>
+
+                  <label className="form-label" htmlFor="work-location">
+                    Work Location
+                    <input
+                      id="work-location"
+                      className="form-control mt-2"
+                      value={workLocation}
+                      onChange={(event) => setWorkLocation(event.target.value)}
+                      disabled={isLoading}
+                    />
+                  </label>
+
+                  <label className="form-label" htmlFor="role-requirements">
+                    Role &amp; Culture Notes
+                    <textarea
+                      id="role-requirements"
+                      className="form-control mt-2 min-h-28 resize-y"
+                      value={roleRequirements}
+                      onChange={(event) => setRoleRequirements(event.target.value)}
+                      disabled={isLoading}
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </motion.div>
@@ -169,7 +289,7 @@ export default function SetupPage() {
             <div className="space-y-8">
               {/* Difficulty Level */}
               <div className="card p-8">
-                <h3 className="text-lg font-semibold text-text-primary mb-6">Difficulty Level</h3>
+                <h3 className="text-lg font-semibold text-text-primary mb-6">Experience Pool</h3>
                 <div className="grid grid-cols-3 gap-4">
                   {hrDifficultyPools.map((d) => (
                     <motion.button
@@ -177,7 +297,12 @@ export default function SetupPage() {
                       type="button"
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
-                      onClick={() => setDifficulty(d.value)}
+                      onClick={() => {
+                        setDifficulty(d.value);
+                        setMinSalaryLpa(d.defaultSalaryBand.min.toFixed(1));
+                        setMaxSalaryLpa(d.defaultSalaryBand.max.toFixed(1));
+                        setMaxNoticePeriodDays(String(d.maxNoticeDays));
+                      }}
                       disabled={isLoading}
                       className={`
                         difficulty-btn
@@ -267,6 +392,10 @@ export default function SetupPage() {
               ))}
             </ul>
           </section>
+
+          <p className="rounded-lg border border-border-subtle bg-surface-elevated px-4 py-3 text-center text-xs leading-5 text-text-muted">
+            Active Guardrails: Equal Opportunity Filter (No Age, Religion, Marital, or Family Status Questions) · Confidential Notes · Out-of-Band Human Checkpoint
+          </p>
 
           {/* Error Message */}
           {error && (

@@ -3,21 +3,27 @@ import { InterviewDifficulty } from './types/interview';
 export const hrDifficultyPools = [
   {
     value: InterviewDifficulty.EASY,
-    label: 'Fresher pool',
-    description: '0 years · academic or internship projects',
+    label: 'Fresher (0 Yrs)',
+    description: 'Entry-level question set · Academic STAR & immediate joining',
     activeClass: 'active-easy',
+    defaultSalaryBand: { min: 4, max: 7 },
+    maxNoticeDays: 15,
   },
   {
     value: InterviewDifficulty.MEDIUM,
-    label: 'Junior pool',
-    description: '1–3 years · hands-on project contributions',
+    label: 'Junior (1–3 Yrs)',
+    description: 'Early-career question set · Production STAR & notice check',
     activeClass: 'active-medium',
+    defaultSalaryBand: { min: 7, max: 14 },
+    maxNoticeDays: 30,
   },
   {
     value: InterviewDifficulty.HARD,
-    label: 'Mid-level pool',
-    description: '3–6 years · ownership and career progression',
+    label: 'Mid-Level (3–6 Yrs)',
+    description: 'Experienced question set · Ownership STAR & band check',
     activeClass: 'active-hard',
+    defaultSalaryBand: { min: 14, max: 24 },
+    maxNoticeDays: 60,
   },
 ] as const;
 
@@ -29,7 +35,7 @@ export const hrWorkflowSections = [
   },
   {
     category: 'PROJECTS',
-    title: '02 / STAR PROJECTS: Past Project Deep-Dive',
+    title: '02 / STAR PROJECTS: Past Project Probing',
     weight: 35,
   },
   {
@@ -39,7 +45,7 @@ export const hrWorkflowSections = [
   },
   {
     category: 'BEHAVIORAL',
-    title: '04 / SALARY: Compensation Expectations & Band Check',
+    title: '04 / SALARY: Compensation Band & Final Logistics',
     weight: 20,
   },
 ] as const;
