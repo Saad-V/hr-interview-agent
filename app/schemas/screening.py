@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class EvidenceBackedRedFlag(BaseModel):
     description: str = Field(min_length=8, max_length=300)
-    evidence: str = Field(min_length=1, max_length=500)
+    evidence: str = Field(default="", max_length=500)
 
 
 class CandidateScreeningFacts(BaseModel):

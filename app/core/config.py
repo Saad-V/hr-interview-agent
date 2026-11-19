@@ -7,13 +7,20 @@ from sqlalchemy.engine import URL
 
 class Settings(BaseSettings):
     database_url: str
+    database_url_unpooled: str | None = None
     gemini_api_key: str
     gemini_api_key_2: str
     jwt_secret_key: str | None = None
     access_token_expire_minutes: int = Field(default=30, gt=0)
     deepgram_stt_key: str | None = None
-    gemini_model: str = "gemini-3.6-flash"
-    gemini_fallback_models: list[str] = Field(default_factory=lambda: ["gemini-3.5-flash", "gemini-3.1-flash-lite"])
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_fallback_models: list[str] = Field(
+        default_factory=lambda: [
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+        ]
+    )
     hr_salary_min_lpa: float | None = Field(default=None, ge=0)
     hr_salary_max_lpa: float | None = Field(default=None, ge=0)
     hr_notice_max_days: int = Field(default=60, ge=0)

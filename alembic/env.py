@@ -15,7 +15,7 @@ import app.models
 # access to the values within the .ini file in use.
 config = context.config
 
-db_url = settings.database_url
+db_url = settings.database_url_unpooled or settings.database_url
 # Escape % for configparser so passwords with special characters are preserved.
 db_url = db_url.replace("%", "%%")
 

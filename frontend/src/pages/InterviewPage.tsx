@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Loader2, AlertCircle } from 'lucide-react';
+import axios from 'axios';
 import { useInterview, useInterviewDispatch } from '../hooks/useInterview';
 import { interviewService } from '../services/interviewService';
 import type { QuestionResponse, InterviewReport, InterviewPhase } from '../types/interview';
@@ -23,6 +24,7 @@ export default function InterviewPage() {
   const [answer, setAnswer] = useState('');
   const [isLoadingQuestion, setIsLoadingQuestion] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [canRetryAnswer, setCanRetryAnswer] = useState(false);
   const [turnCount, setTurnCount] = useState(0);
 
   // ── Phase state machine ──
@@ -111,6 +113,7 @@ export default function InterviewPage() {
     stopListening();
     setPhase('thinking');
     setError(null);
+    setCanRetryAnswer(false);
 
     try {
       const response = await interviewService.submitAnswer(
@@ -132,9 +135,15 @@ export default function InterviewPage() {
         setTurnCount(response.current_question.turn_number);
       }
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Failed to submit answer.';
+      const isServiceUnavailable =
+        axios.isAxiosError(err) && err.response?.status === 503;
+      const message = isServiceUnavailable
+        ? "The AI service is temporarily unavailable. Your answer wasn't submitted and is still here. Retry to continue."
+        : err instanceof Error
+          ? err.message
+          : 'Failed to submit answer.';
       setError(message);
+      setCanRetryAnswer(isServiceUnavailable);
       setPhase('idle');
     }
   };
@@ -204,10 +213,13 @@ export default function InterviewPage() {
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-5">
           <p className="eyebrow text-text-muted">{question?.section_title || 'Interview'}</p>
           <div className="flex items-center gap-4">
-            <p className="mono text-text-muted">QUESTION {String(turnCount).padStart(2, '0')} / 10</p>
+            <p className="mono text-text-muted">QUESTION {String(turnCount).padStart(2, '0')}</p>
             <StatusIndicator phase={phase} />
           </div>
         </div>
+        <p className="mt-3 rounded-md bg-surface-elevated px-3 py-2 text-xs text-text-muted">
+          HR Guardrail Active: Prohibited-question filter enabled · Voice &amp; Text STT tolerant
+        </p>
 
         <h1 className="editorial mt-10 text-4xl leading-tight sm:text-5xl">
           {question?.question}
@@ -231,8 +243,11 @@ export default function InterviewPage() {
         <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
           <ReplayButton onReplay={handleReplay} disabled={isSpeaking || phase === 'thinking'} />
           <SubmitButton
-            disabled={phase !== 'listening' || !answer.trim()}
+            disabled={
+              (!canRetryAnswer && phase !== 'listening') || !answer.trim()
+            }
             isSubmitting={phase === 'thinking'}
+            label={canRetryAnswer ? 'Retry Answer' : 'Submit Answer'}
             onSubmit={handleSubmit}
           />
         </div>

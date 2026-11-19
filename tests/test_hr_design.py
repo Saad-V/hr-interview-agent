@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import Mock
 
 import pytest
+from pydantic import BaseModel
 
 from app.ai.prompts import (
     INTERVIEW_BLUEPRINT_SYSTEM_PROMPT,
@@ -15,12 +16,14 @@ from app.ai.prompts import (
     build_interview_blueprint_prompt,
 )
 from app.ai.schemas import (
+    AnswerEvaluationSchema,
     CandidateProfileSchema,
     HRPolicyBandSchema,
     InterviewBlueprintSchema,
     JobProfileSchema,
     RedFlagItemSchema,
 )
+from app.ai import llm
 from app.core.config import Settings
 from app.core.enums import InterviewDifficulty
 from app.core.interview_design import (
@@ -44,12 +47,228 @@ from app.services.ats_export_service import build_ats_export_csv
 from app.services.answer_evaluation_service import (
     _validate_red_flag_evidence,
     _validate_screening_facts,
+    evaluate_answer,
 )
 from app.services.hr_screening_service import build_hr_screening_result
 from app.services.document_parser_service import extract_text
 from app.services.interview_service import _build_hr_policy_screening
+from app.services import interview_service
+from app.services import interview_report_service
 from app.services.job_description_service import create_hr_policy_job_description
 from app.utils import file_storage
+
+
+def test_gemini_client_has_bounded_timeout_and_no_sdk_retries(monkeypatch):
+    client_options = []
+
+    class FakeClient:
+        pass
+
+    def create_client(**kwargs):
+        client_options.append(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr(llm.genai, "Client", create_client)
+    llm._create_client("test-key")
+
+    http_options = client_options[0]["http_options"]
+    assert http_options.timeout == llm.GEMINI_REQUEST_TIMEOUT_MS
+    assert http_options.retry_options.attempts == 1
+
+
+def test_gemini_503_retries_then_uses_fallback_model(monkeypatch):
+    class Result(BaseModel):
+        value: str
+
+    monkeypatch.setattr(llm.settings, "gemini_model", "primary")
+    monkeypatch.setattr(llm.settings, "gemini_fallback_models", ["fallback"])
+    monkeypatch.setattr(llm, "_client_for_attempt", lambda attempt: attempt)
+    delays = []
+    monkeypatch.setattr(llm.time, "sleep", delays.append)
+    calls = []
+
+    def generate(**kwargs):
+        calls.append((kwargs["model"], kwargs["client"]))
+        if kwargs["model"] == "primary":
+            raise llm.errors.ServerError(503, {"error": {"message": "Unavailable"}})
+        return Result(value="fallback response")
+
+    monkeypatch.setattr(llm, "_try_generate", generate)
+    result = llm.generate_structured_output(
+        system_prompt="",
+        user_prompt="",
+        response_schema=Result,
+    )
+
+    assert result.value == "fallback response"
+    assert calls == [
+        ("primary", 0),
+        ("primary", 1),
+        ("primary", 2),
+        ("fallback", 0),
+    ]
+    assert delays == [5, 10]
+
+
+def test_gemini_generation_error_reports_exhausted_models(monkeypatch):
+    class Result(BaseModel):
+        value: str
+
+    monkeypatch.setattr(llm.settings, "gemini_model", "primary")
+    monkeypatch.setattr(llm.settings, "gemini_fallback_models", ["fallback"])
+    monkeypatch.setattr(llm, "_client_for_attempt", lambda attempt: attempt)
+    monkeypatch.setattr(llm.time, "sleep", lambda _: None)
+    attempted_models = []
+
+    def fail_with_deadline(**kwargs):
+        attempted_models.append(kwargs["model"])
+        raise llm.errors.ServerError(
+            504,
+            {"error": {"code": 504, "status": "DEADLINE_EXCEEDED"}},
+        )
+
+    monkeypatch.setattr(llm, "_try_generate", fail_with_deadline)
+    with pytest.raises(llm.LLMGenerationError) as exc_info:
+        llm.generate_structured_output(
+            system_prompt="",
+            user_prompt="",
+            response_schema=Result,
+        )
+
+    assert attempted_models == ["primary", "fallback"]
+    assert isinstance(exc_info.value.__cause__, llm.errors.ServerError)
+
+
+def test_report_uses_rubric_fallback_when_gemini_models_fail(monkeypatch):
+    monkeypatch.setattr(
+        interview_report_service,
+        "generate_structured_output",
+        Mock(side_effect=llm.LLMGenerationError("models unavailable")),
+    )
+    conversation_turns = [
+        {
+            "evaluation": {
+                "criteria": [
+                    {
+                        "criterion_id": "ACCURACY",
+                        "criterion": "Accuracy",
+                        "awarded_score": 4,
+                        "maximum_score": 4,
+                    },
+                    {
+                        "criterion_id": "COMMUNICATION",
+                        "criterion": "Communication",
+                        "awarded_score": 1,
+                        "maximum_score": 4,
+                    },
+                ]
+            }
+        }
+    ]
+
+    narrative = interview_report_service.generate_interview_report(
+        blueprint={},
+        conversation_turns=conversation_turns,
+    )
+
+    assert narrative.summary.startswith(
+        "Across 1 evaluated answers, the candidate earned 5/8 rubric points (62.5%)."
+    )
+    assert narrative.strengths == ["Accuracy: scored 4/4 points."]
+    assert narrative.areas_for_improvement == [
+        "Communication: scored 1/4 points."
+    ]
+
+
+def test_final_report_fallback_failure_returns_retryable_503(monkeypatch):
+    interview = Mock(
+        status=interview_service.InterviewStatus.IN_PROGRESS,
+        difficulty=InterviewDifficulty.EASY,
+    )
+    blueprint = Mock(
+        blueprint_json={
+            "rubric_version": RUBRIC_VERSION,
+            "sections": [
+                {
+                    "title": "Introduction",
+                    "questions": [{"question": "Tell me about yourself."}],
+                }
+            ],
+        }
+    )
+    evaluation = Mock()
+    evaluation.model_dump.return_value = {"red_flags": []}
+    candidate_profile = Mock()
+    job_profile = Mock(profile_json={})
+    scorecard = Mock(weighted_score_percentage=75)
+    scorecard_schema = Mock()
+    scorecard_schema.model_validate.return_value = scorecard
+
+    monkeypatch.setattr(
+        interview_service.interview_repository,
+        "get_by_id",
+        Mock(return_value=interview),
+    )
+    monkeypatch.setattr(
+        interview_service.interview_blueprint_repository,
+        "get_by_session_id",
+        Mock(return_value=blueprint),
+    )
+    monkeypatch.setattr(
+        interview_service.conversation_turn_repository,
+        "get_last_turn",
+        Mock(return_value=None),
+    )
+    monkeypatch.setattr(
+        interview_service.conversation_turn_repository,
+        "get_by_session_id",
+        Mock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        interview_service.candidate_profile_repository,
+        "get_by_session_id",
+        Mock(return_value=candidate_profile),
+    )
+    monkeypatch.setattr(
+        interview_service.job_profile_repository,
+        "get_by_session_id",
+        Mock(return_value=job_profile),
+    )
+    monkeypatch.setattr(
+        interview_service.conversation_turn_repository,
+        "create",
+        Mock(),
+    )
+    monkeypatch.setattr(interview_service, "evaluate_answer", Mock(return_value=evaluation))
+    monkeypatch.setattr(
+        interview_service,
+        "calculate_report_scores",
+        Mock(return_value={"overall_score": 75}),
+    )
+    monkeypatch.setattr(interview_service, "calculate_hr_scorecard", Mock(return_value={}))
+    monkeypatch.setattr(interview_service, "HRScorecard", scorecard_schema)
+    monkeypatch.setattr(
+        interview_service,
+        "_build_hr_policy_screening",
+        Mock(return_value=(None, [], Mock(), False, [])),
+    )
+    monkeypatch.setattr(
+        interview_service,
+        "generate_interview_report",
+        Mock(side_effect=llm.LLMGenerationError("models unavailable")),
+    )
+    db = Mock()
+
+    with pytest.raises(interview_service.HTTPException) as exc_info:
+        interview_service.submit_answer(
+            db=db,
+            interview_session_id=uuid.uuid4(),
+            answer="My answer.",
+        )
+
+    assert exc_info.value.status_code == 503
+    assert db.commit.call_count == 2
+    interview_service.conversation_turn_repository.create.assert_not_called()
 
 
 def _blueprint_payload() -> dict:
@@ -297,6 +516,11 @@ def test_screening_extraction_requires_matching_explicit_answer_evidence():
     )
     with pytest.raises(ValueError, match="evidence must quote"):
         _validate_screening_facts(unsupported, "I expect 20 LPA.")
+
+
+def test_candidate_screening_facts_requires_value_and_evidence_together():
+    with pytest.raises(ValueError, match="must be provided together"):
+        CandidateScreeningFacts(expected_ctc_lpa=18.5)
 
 
 @pytest.mark.parametrize(
@@ -647,3 +871,132 @@ def test_ats_export_contains_summary_without_answer_evidence():
     assert '"INTRODUCTION"' in row["weighted_stage_scores"]
     assert "Do not export this answer quote" not in content
     assert row["evidence_backed_red_flag_count"] == "1"
+
+
+@pytest.mark.parametrize(
+    (
+        "candidate_answer",
+        "expected_salary",
+        "salary_evidence",
+        "notice_days",
+        "notice_evidence",
+        "include_model_evidence",
+    ),
+    [
+        (
+            "I built project alpha. My expected CTC is 9 to 10.5 lakh per annum, "
+            "and I can join in 2 months.",
+            10.5,
+            "10.5 lakh",
+            60,
+            "2 months",
+            True,
+        ),
+        ("I built project alpha.", None, None, None, None, True),
+        (
+            "I built project alpha. My expected CTC is 9 to 10.5 lakh per annum, "
+            "and I can join in 2 months.",
+            10.5,
+            "10.5 lakh",
+            60,
+            "2 months",
+            False,
+        ),
+        ("I built project alpha.", None, None, None, None, False),
+    ],
+)
+def test_answer_evaluation_anchors_or_omits_screening_evidence(
+    monkeypatch,
+    candidate_answer,
+    expected_salary,
+    salary_evidence,
+    notice_days,
+    notice_evidence,
+    include_model_evidence,
+):
+    monkeypatch.setattr(llm.settings, "gemini_model", "primary-model")
+    monkeypatch.setattr(llm.settings, "gemini_fallback_models", ["fallback-model"])
+
+    def build_evaluation():
+        return AnswerEvaluationSchema(
+            criteria=[
+                {
+                    "criterion_id": criterion_id,
+                    "awarded_score": 4 if criterion_id == "ACCURACY" else 0,
+                    "evidence": "A concise rationale about the candidate's answer."
+                    if criterion_id == "ACCURACY"
+                    else "Not present in the answer.",
+                }
+                for criterion_id in RUBRIC_MAX_SCORES
+            ],
+            feedback="The answer is evaluated against the rubric.",
+            suggested_improvement="Provide additional details.",
+            screening_facts={
+                "expected_ctc_lpa": 10.5,
+                "salary_evidence": (
+                    "The candidate expects ten point five."
+                    if include_model_evidence
+                    else None
+                ),
+                "stated_notice_days": 60,
+                "notice_evidence": (
+                    "The candidate has a two-month notice."
+                    if include_model_evidence
+                    else None
+                ),
+                "red_flags": [
+                    {
+                        "description": "Unsupported concern.",
+                        "evidence": "I refused to work with the team.",
+                    }
+                ],
+            },
+            extracted_expected_ctc_lpa=10.5,
+            extracted_notice_period_days=60,
+            red_flags=[
+                {
+                    "category": "CULTURE_CONCERN",
+                    "description": "Unsupported concern.",
+                    "evidence": "I refused to work with the team.",
+                }
+            ],
+        )
+
+    model_calls = []
+
+    def generate_output(**kwargs):
+        model_calls.append(kwargs["model"])
+        return build_evaluation()
+
+    monkeypatch.setattr(llm, "_try_generate", generate_output)
+    question = {
+        "question": "Describe a project you worked on.",
+        "difficulty": "EASY",
+        "expected_topics": ["project"],
+        "evaluation_points": [
+            {
+                "criterion_id": criterion_id,
+                "criterion": RUBRIC_CRITERION_LABELS[criterion_id],
+                "description": "Evaluate observable candidate evidence.",
+                "max_score": score,
+            }
+            for criterion_id, score in RUBRIC_MAX_SCORES.items()
+        ],
+    }
+
+    result = evaluate_answer(
+        question=question,
+        candidate_answer=candidate_answer,
+    )
+
+    accuracy = next(
+        criterion for criterion in result.criteria
+        if criterion.criterion_id == "ACCURACY"
+    )
+    assert accuracy.evidence == "A concise rationale about the candidate's answer."
+    assert result.screening_facts.expected_ctc_lpa == expected_salary
+    assert result.screening_facts.salary_evidence == salary_evidence
+    assert result.screening_facts.stated_notice_days == notice_days
+    assert result.screening_facts.notice_evidence == notice_evidence
+    assert result.red_flags == []
+    assert model_calls == ["primary-model"]

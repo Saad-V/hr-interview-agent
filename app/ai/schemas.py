@@ -17,7 +17,7 @@ from app.core.interview_design import (
     section_question_counts,
     validate_prohibited_question_guardrail,
 )
-from app.schemas.screening import CandidateScreeningFacts
+from app.schemas.screening import EvidenceBackedRedFlag
 
 
 # ----------------------------
@@ -178,7 +178,14 @@ class InterviewReportNarrativeSchema(BaseModel):
 class CriterionEvaluationSchema(BaseModel):
     criterion_id: RubricCriterionId
     awarded_score: int = Field(ge=0, le=max(RUBRIC_MAX_SCORES.values()))
-    evidence: str
+    evidence: str = Field(
+        min_length=1,
+        description=(
+            "A concise rationale grounded in the candidate's answer. It may "
+            "paraphrase. Use exactly 'Not present in the answer.' when the "
+            "answer does not support this criterion."
+        ),
+    )
 
 
 class RedFlagItemSchema(BaseModel):
@@ -190,8 +197,17 @@ class RedFlagItemSchema(BaseModel):
     )
     description: str
     evidence: str = Field(
+        default="",
         description="Exact verbatim quote from the candidate answer supporting this red flag."
     )
+
+
+class EvaluationScreeningFactsSchema(BaseModel):
+    expected_ctc_lpa: float | None = Field(default=None, ge=0)
+    salary_evidence: str | None = Field(default=None, max_length=500)
+    stated_notice_days: int | None = Field(default=None, ge=0)
+    notice_evidence: str | None = Field(default=None, max_length=500)
+    red_flags: list[EvidenceBackedRedFlag] = Field(default_factory=list)
 
 
 class AnswerEvaluationSchema(BaseModel):
@@ -201,8 +217,8 @@ class AnswerEvaluationSchema(BaseModel):
     weaknesses: list[str] = Field(default_factory=list)
     missing_topics: list[str] = Field(default_factory=list)
     suggested_improvement: str
-    screening_facts: CandidateScreeningFacts = Field(
-        default_factory=CandidateScreeningFacts
+    screening_facts: EvaluationScreeningFactsSchema = Field(
+        default_factory=EvaluationScreeningFactsSchema
     )
     red_flags: list[RedFlagItemSchema] = Field(default_factory=list)
     extracted_expected_ctc_lpa: float | None = Field(

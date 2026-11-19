@@ -4,12 +4,14 @@ import { Loader2, Send } from "lucide-react";
 interface SubmitButtonProps {
   disabled: boolean;
   isSubmitting: boolean;
+  label?: string;
   onSubmit: () => void;
 }
 
 export default function SubmitButton({
   disabled,
   isSubmitting,
+  label = "Submit Answer",
   onSubmit,
 }: SubmitButtonProps) {
   return (
@@ -39,7 +41,7 @@ export default function SubmitButton({
       ) : (
         <>
           <Send className="w-4 h-4" />
-          Submit Answer
+          {label}
         </>
       )}
     </motion.button>

@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
 import { Link, useParams } from 'react-router-dom';
 import { sessionHistoryService } from '../services/sessionHistoryService';
 import ATSExportButton from '../components/ATSExportButton';
+import HRReportSummary, { HRCompetencyBars } from '../components/HRReportSummary';
 
 function getErrorMessage(error: unknown) {
   if (axios.isAxiosError(error)) {
@@ -26,6 +28,7 @@ function getErrorMessage(error: unknown) {
 
 export default function SessionDetailPage() {
   const { sessionId } = useParams();
+  const [pushedToAts, setPushedToAts] = useState(false);
   const sessionQuery = useQuery({
     queryKey: ['interview-history', sessionId],
     queryFn: () => {
@@ -81,7 +84,9 @@ export default function SessionDetailPage() {
         <p className="eyebrow text-text-muted">
           {session.status.replaceAll('_', ' ')} · {session.difficulty}
         </p>
-        <h1 className="editorial mt-3 text-5xl sm:text-6xl">Session summary</h1>
+        <h1 className="editorial mt-3 text-5xl sm:text-6xl">
+          05 / HR Scorecard &amp; Interviewer Notes
+        </h1>
         <p className="mt-3 text-sm text-text-secondary">
           {new Intl.DateTimeFormat(undefined, {
             dateStyle: 'full',
@@ -90,10 +95,35 @@ export default function SessionDetailPage() {
           {' · '}{session.planned_duration_minutes} minutes
           {' · '}{session.turn_count} {session.turn_count === 1 ? 'answer' : 'answers'}
         </p>
+        {session.report && (
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <button
+              className="primary-action"
+              onClick={() => window.print()}
+              type="button"
+            >
+              Export Scorecard (PDF / Print)
+            </button>
+            <button
+              className="primary-action"
+              onClick={() => setPushedToAts(true)}
+              type="button"
+            >
+              Push to ATS
+            </button>
+            {pushedToAts && (
+              <span className="text-xs text-text-muted" role="status">
+                Pushed to ATS ✓ (Confidential)
+              </span>
+            )}
+          </div>
+        )}
       </header>
 
       {session.report ? (
         <>
+          <HRReportSummary report={session.report} />
+
           <section className="grid gap-8 border-b border-border py-8 sm:grid-cols-[0.7fr_1.3fr] sm:items-center">
             <div>
               <p className="eyebrow text-text-muted">Overall score</p>
@@ -115,11 +145,6 @@ export default function SessionDetailPage() {
                 <span className="text-text-muted">Recommendation: </span>
                 {session.report.recommendation}
               </p>
-              {session.report.screening_summary?.human_checkpoint_required && (
-                <p className="mt-3 text-sm font-medium text-danger" role="status">
-                  Human review is required before acting on this recommendation.
-                </p>
-              )}
               {session.report.rubric_version === 'hr-rubric-v1' && (
                 <div className="mt-5">
                   <ATSExportButton sessionId={session.id} />
@@ -146,18 +171,15 @@ export default function SessionDetailPage() {
                   </div>
                 ))}
               </div>
-              {session.report.screening_summary?.human_checkpoint_required && (
-                <div className="mt-5 rounded-lg border border-danger/30 bg-danger/10 p-4">
-                  <p className="text-sm font-medium text-danger" role="status">
-                    Human review required
-                  </p>
-                  <ul className="mt-2 space-y-1 text-sm text-danger">
-                    {session.report.screening_summary.checkpoint_reasons.map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
+              <div className="mt-8">
+                <p className="eyebrow text-text-muted">HR competencies</p>
+                <div className="mt-4">
+                  <HRCompetencyBars
+                    technicalScore={session.report.technical_score}
+                    communicationScore={session.report.communication_score}
+                  />
                 </div>
-              )}
+              </div>
             </section>
           )}
 

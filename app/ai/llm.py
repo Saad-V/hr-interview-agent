@@ -1,4 +1,4 @@
-from typing import Type, TypeVar
+from typing import Callable, Type, TypeVar
 import json
 from google import genai
 from google.genai import errors, types
@@ -6,13 +6,37 @@ from pydantic import BaseModel
 import time
 from app.core.config import settings
 
-MAX_RETRIES = 3
+MAX_ATTEMPTS = 3
 INITIAL_DELAY = 5
+GEMINI_REQUEST_TIMEOUT_MS = 60_000
 
 T = TypeVar("T", bound=BaseModel)
 
-primary_client = genai.Client(api_key=settings.gemini_api_key)
-secondary_client = genai.Client(api_key=settings.gemini_api_key_2) if settings.gemini_api_key_2 else primary_client
+
+class OutputValidationError(ValueError):
+    pass
+
+
+class LLMGenerationError(RuntimeError):
+    """Raised when every configured model fails to generate valid output."""
+
+
+def _create_client(api_key: str) -> genai.Client:
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=GEMINI_REQUEST_TIMEOUT_MS,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
+
+
+primary_client = _create_client(settings.gemini_api_key)
+secondary_client = (
+    _create_client(settings.gemini_api_key_2)
+    if settings.gemini_api_key_2
+    else primary_client
+)
 
 
 def _build_model_sequence() -> list[str]:
@@ -31,6 +55,8 @@ def _client_for_attempt(attempt: int) -> genai.Client:
 
 def _is_retryable_503(exc: Exception) -> bool:
     status_value = getattr(exc, "status", None)
+    if status_value is None:
+        status_value = getattr(exc, "code", None)
     if isinstance(status_value, int):
         return status_value == 503
     if isinstance(status_value, str):
@@ -83,15 +109,16 @@ def generate_structured_output(
     user_prompt: str,
     response_schema: Type[T],
     temperature: float = 0.2,
+    validator: Callable[[T], None] | None = None,
 ) -> T:
     model_sequence = _build_model_sequence()
     last_exception: Exception | None = None
 
     for fallback_model in model_sequence:
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(MAX_ATTEMPTS):
             client = _client_for_attempt(attempt)
             try:
-                return _try_generate(
+                output = _try_generate(
                     client=client,
                     model=fallback_model,
                     system_prompt=system_prompt,
@@ -99,10 +126,23 @@ def generate_structured_output(
                     response_schema=response_schema,
                     temperature=temperature,
                 )
+                if validator is not None:
+                    try:
+                        validator(output)
+                    except ValueError as e:
+                        raise OutputValidationError(str(e)) from e
+                return output
+            except OutputValidationError as e:
+                last_exception = e
+                print(
+                    f"Gemini model {fallback_model} returned output that failed "
+                    f"validation: {e}. Trying the next model."
+                )
+                break
             except errors.ServerError as e:
                 last_exception = e
                 if _is_retryable_503(e):
-                    if attempt < MAX_RETRIES - 1:
+                    if attempt < MAX_ATTEMPTS - 1:
                         delay = INITIAL_DELAY * (2 ** attempt)
                         print(
                             f"Gemini model {fallback_model} unavailable (503) on attempt {attempt + 1}. Retrying same model in {delay}s..."
@@ -110,13 +150,18 @@ def generate_structured_output(
                         time.sleep(delay)
                         continue
                     print(
-                        f"Gemini model {fallback_model} unavailable after {MAX_RETRIES} retries. Trying fallback model."
+                        f"Gemini model {fallback_model} unavailable after "
+                        f"{MAX_ATTEMPTS} attempts. Trying fallback model."
                     )
                     break
-                raise
+                print(
+                    f"Gemini model {fallback_model} returned server error "
+                    f"({getattr(e, 'code', 'unknown')}). Trying fallback model."
+                )
+                break
             except Exception as e:
                 last_exception = e
-                if attempt < MAX_RETRIES - 1:
+                if attempt < MAX_ATTEMPTS - 1:
                     delay = INITIAL_DELAY * (2 ** attempt)
                     print(
                         f"Gemini request failed for model {fallback_model} on attempt {attempt + 1}. Retrying in {delay}s..."
@@ -124,11 +169,18 @@ def generate_structured_output(
                     time.sleep(delay)
                     continue
                 print(
-                    f"Gemini request failed for model {fallback_model} after {MAX_RETRIES} retries."
+                    f"Gemini request failed for model {fallback_model} after "
+                    f"{MAX_ATTEMPTS} attempts."
                 )
                 break
 
     if last_exception is not None:
-        raise last_exception
+        if isinstance(last_exception, OutputValidationError):
+            raise last_exception
+        raise LLMGenerationError(
+            "All configured Gemini models failed to generate valid output."
+        ) from last_exception
 
-    raise RuntimeError("Gemini request failed for all configured models.")
+    raise LLMGenerationError(
+        "No Gemini models are configured for output generation."
+    )

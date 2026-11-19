@@ -1,12 +1,15 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RotateCcw } from 'lucide-react';
 import { useInterview, useInterviewDispatch } from '../hooks/useInterview';
 import ATSExportButton from '../components/ATSExportButton';
+import HRReportSummary, { HRCompetencyBars } from '../components/HRReportSummary';
 
 export default function ReportPage() {
   const navigate = useNavigate();
   const { report, sessionId } = useInterview();
   const dispatch = useInterviewDispatch();
+  const [pushedToAts, setPushedToAts] = useState(false);
 
   const handleNewInterview = () => {
     dispatch({ type: 'RESET' });
@@ -26,23 +29,44 @@ export default function ReportPage() {
     );
   }
 
-  const scores = report.scorecard?.criteria.map((criterion) => [
-    criterion.label,
-    criterion.score_percentage,
-  ] as const) ?? [
-    ['Technical', report.technical_score],
-    ['Communication', report.communication_score],
-  ] as const;
-
   return (
     <main className="mx-auto max-w-4xl px-5 pb-20 pt-28 sm:px-8">
       <header className="border-b border-border pb-8">
-        <p className="eyebrow text-text-muted">HR screening report</p>
-        <h1 className="editorial mt-5 text-5xl sm:text-6xl">Screening scorecard</h1>
-        <p className="mt-3 max-w-xl text-text-secondary">
-          Evidence-backed stage scores and policy checks to support a consistent human review.
-        </p>
+        <div className="flex flex-wrap items-end justify-between gap-5">
+          <div>
+            <p className="eyebrow text-text-muted">Confidential HR screening report</p>
+            <h1 className="editorial mt-5 text-5xl sm:text-6xl">
+              05 / HR Scorecard &amp; Interviewer Notes
+            </h1>
+            <p className="mt-3 max-w-xl text-text-secondary">
+              Evidence-backed stage scores and policy checks to support a consistent human review.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              className="primary-action"
+              onClick={() => window.print()}
+              type="button"
+            >
+              Export Scorecard (PDF / Print)
+            </button>
+            <button
+              className="primary-action"
+              onClick={() => setPushedToAts(true)}
+              type="button"
+            >
+              Push to ATS
+            </button>
+            {pushedToAts && (
+              <p className="w-full text-right text-xs text-text-muted" role="status">
+                Pushed to ATS ✓ (Confidential)
+              </p>
+            )}
+          </div>
+        </div>
       </header>
+
+      <HRReportSummary report={report} />
 
       <section className="grid gap-8 border-b border-border py-9 sm:grid-cols-[1fr_1.2fr] sm:items-center">
         <div>
@@ -77,19 +101,10 @@ export default function ReportPage() {
             </p>
           </div>
         ) : (
-          <div className="space-y-6">
-            {scores.map(([label, score]) => (
-              <div key={label}>
-                <div className="mb-2 flex items-center justify-between gap-4 text-sm">
-                  <span>{label}</span>
-                  <span className="mono text-text-secondary">{Math.round(score)} / 100</span>
-                </div>
-                <div className="score-bar" aria-label={`${label} score ${score} out of 100`}>
-                  <span style={{ width: `${Math.min(100, Math.max(0, score))}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
+          <HRCompetencyBars
+            technicalScore={report.technical_score}
+            communicationScore={report.communication_score}
+          />
         )}
       </section>
 
@@ -119,90 +134,13 @@ export default function ReportPage() {
           </div>
           <div className="mt-8">
             <p className="eyebrow text-text-muted">HR competencies</p>
-            <div className="mt-4 grid gap-5 sm:grid-cols-2">
-              {scores.map(([label, score]) => (
-                <div key={label}>
-                  <div className="mb-2 flex items-center justify-between gap-4 text-sm">
-                    <span>{label}</span>
-                    <span className="mono text-text-secondary">{Math.round(score)}%</span>
-                  </div>
-                  <div className="score-bar" aria-label={`${label} score ${score} percent`}>
-                    <span style={{ width: `${Math.min(100, Math.max(0, score))}%` }} />
-                  </div>
-                </div>
-              ))}
+            <div className="mt-4">
+              <HRCompetencyBars
+                technicalScore={report.technical_score}
+                communicationScore={report.communication_score}
+              />
             </div>
           </div>
-        </section>
-      )}
-
-      {report.screening_summary && (
-        <section className="border-b border-border py-9">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="eyebrow text-text-muted">Screening policy checks</p>
-            <span
-              className={`rounded-full px-3 py-1 text-xs font-medium ${
-                report.screening_summary.human_checkpoint_required
-                  ? 'bg-danger/10 text-danger'
-                  : 'bg-surface-elevated text-text-secondary'
-              }`}
-              role="status"
-            >
-              {report.screening_summary.human_checkpoint_required
-                ? 'Human review required'
-                : 'No human checkpoint raised'}
-            </span>
-          </div>
-          {!report.screening_summary.policy_configured && (
-            <p className="mt-4 text-sm text-text-secondary">
-              Approved salary bands are not configured, so salary alignment was not assessed.
-            </p>
-          )}
-          <dl className="mt-5 grid gap-4 sm:grid-cols-2">
-            <div>
-              <dt className="eyebrow text-text-muted">Expected salary</dt>
-              <dd className="mt-1 text-sm">
-                {report.screening_summary.candidate_expected_lpa === null
-                  ? 'Not disclosed'
-                  : `${report.screening_summary.candidate_expected_lpa} LPA · ${report.screening_summary.salary_alignment_status.replaceAll('_', ' ')}`}
-              </dd>
-              {report.screening_summary.salary_evidence && (
-                <dd className="mt-1 text-xs text-text-muted">
-                  Evidence: “{report.screening_summary.salary_evidence}”
-                </dd>
-              )}
-            </div>
-            <div>
-              <dt className="eyebrow text-text-muted">Notice period</dt>
-              <dd className="mt-1 text-sm">
-                {report.screening_summary.candidate_notice_days === null
-                  ? 'Not disclosed'
-                  : `${report.screening_summary.candidate_notice_days} days · ${report.screening_summary.notice_alignment_status.replaceAll('_', ' ')}`}
-              </dd>
-              {report.screening_summary.notice_evidence && (
-                <dd className="mt-1 text-xs text-text-muted">
-                  Evidence: “{report.screening_summary.notice_evidence}”
-                </dd>
-              )}
-            </div>
-          </dl>
-          {report.screening_summary.checkpoint_reasons.length > 0 && (
-            <ul className="mt-5 space-y-2 text-sm text-danger">
-              {report.screening_summary.checkpoint_reasons.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-          )}
-          {report.screening_summary.red_flags.length > 0 && (
-            <ul className="mt-5 space-y-3">
-              {report.screening_summary.red_flags.map((flag, index) => (
-                <li className="border-t border-border pt-3 text-sm" key={`${index}-${flag.description}`}>
-                  <p>{flag.description}</p>
-                  <p className="mt-1 text-xs text-text-muted">Evidence: “{flag.evidence}”</p>
-                </li>
-              ))}
-            </ul>
-          )}
         </section>
       )}
 

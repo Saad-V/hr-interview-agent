@@ -124,6 +124,7 @@ export interface HRScorecard {
 }
 
 export interface HRScreeningRedFlag {
+  category?: string;
   turn_number: number | null;
   section_title: string | null;
   description: string;

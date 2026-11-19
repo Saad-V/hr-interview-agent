@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from google.genai import errors
+from app.ai.llm import LLMGenerationError, OutputValidationError
 from app.ai.schemas import HRPolicyBandSchema
 from app.models.interview_session import InterviewSession
 from app.repositories.candidate_profile_repository import CandidateProfileRepository
@@ -37,7 +38,7 @@ from app.services.candidate_profile_service import generate_candidate_profile
 from app.services.interview_blueprint_service import generate_interview_blueprint
 from app.services.job_profile_service import generate_job_profile
 from app.services.document_parser_service import extract_text
-from app.core.enums import InterviewStatus
+from app.core.enums import InterviewDifficulty, InterviewStatus
 from app.repositories.conversation_turn import ConversationTurnRepository
 from app.schemas.interview_runtime_schema import QuestionResponse
 from app.services.answer_evaluation_service import evaluate_answer
@@ -395,7 +396,11 @@ def start_interview(
         )
 
         error_text = str(e).upper()
-        if isinstance(e, errors.ServerError) or "503" in error_text or "UNAVAILABLE" in error_text:
+        if (
+            isinstance(e, (errors.ServerError, LLMGenerationError))
+            or "503" in error_text
+            or "UNAVAILABLE" in error_text
+        ):
             raise HTTPException(
                 status_code=503,
                 detail="AI model is temporarily unavailable. Please try again later.",
@@ -510,7 +515,9 @@ def submit_answer(
             ),
         )
     
-    sections = blueprint.blueprint_json["sections"]
+    blueprint_json = blueprint.blueprint_json
+    interview_difficulty = interview.difficulty
+    sections = blueprint_json["sections"]
 
     questions = []
 
@@ -536,10 +543,20 @@ def submit_answer(
     section_title = current["section_title"]
     current_question = current["question"]
 
-    evaluation = evaluate_answer(
-        question=current_question,
-        candidate_answer=answer,
-    )
+    db.commit()
+    try:
+        evaluation = evaluate_answer(
+            question=current_question,
+            candidate_answer=answer,
+        )
+    except (LLMGenerationError, OutputValidationError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The AI service is temporarily unavailable. "
+                "Please retry your answer."
+            ),
+        ) from exc
 
     next_question_index = question_index + 1
     is_final_answer = next_question_index >= len(questions)
@@ -581,6 +598,14 @@ def submit_answer(
                 detail="Interview preparation data is missing for report generation.",
             )
 
+        report_conversation_turns = [
+            {
+                "exchange": turn.exchange_json,
+                "evaluation": turn.evaluation_json,
+            }
+            for turn in previous_turns
+        ] + [{"exchange": answer_exchange, "evaluation": evaluation_json}]
+        job_profile_json = job_profile_entry.profile_json or {}
         try:
             evaluated_turns = [
                 *(turn.evaluation_json or {} for turn in previous_turns),
@@ -621,7 +646,7 @@ def submit_answer(
             ) = _build_hr_policy_screening(
                 evaluated_turns,
                 turn_numbers,
-                job_profile_entry.profile_json or {},
+                job_profile_json,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -629,16 +654,20 @@ def submit_answer(
                 detail=f"Could not calculate a valid interview score: {exc}",
             ) from exc
 
-        narrative = generate_interview_report(
-            blueprint=blueprint.blueprint_json,
-            conversation_turns=[
-                {
-                    "exchange": turn.exchange_json,
-                    "evaluation": turn.evaluation_json,
-                }
-                for turn in previous_turns
-            ] + [{"exchange": answer_exchange, "evaluation": evaluation_json}],
-        )
+        db.commit()
+        try:
+            narrative = generate_interview_report(
+                blueprint=blueprint_json,
+                conversation_turns=report_conversation_turns,
+            )
+        except LLMGenerationError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The AI service is temporarily unavailable. "
+                    "Please retry your answer."
+                ),
+            ) from exc
         overall_score = scorecard.weighted_score_percentage
         candidate_pools = {
             InterviewDifficulty.EASY: "Fresher (0 years)",
@@ -656,7 +685,7 @@ def submit_answer(
             "red_flags": red_flags,
             "human_checkpoint_required": human_checkpoint_required,
             "human_checkpoint_reasons": human_checkpoint_reasons,
-            "candidate_pool": candidate_pools[interview.difficulty],
+            "candidate_pool": candidate_pools[interview_difficulty],
             "strengths": narrative.strengths,
             "areas_for_improvement": narrative.areas_for_improvement,
             "summary": narrative.summary,

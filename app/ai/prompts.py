@@ -297,9 +297,11 @@ a verbatim substring quote from the candidate's answer. Return [] when there
 is no supported red flag. Never infer a flag from protected traits, personal
 circumstances, communication style, or missing information.
 
-For each criterion, return its exact criterion_id, awarded_score, and a short
-verbatim evidence excerpt from the candidate answer. If no evidence exists,
-return exactly "Not present in the answer." Evidence must not be invented.
+For each criterion, return its exact criterion_id, awarded_score, and a concise
+rationale grounded in the candidate answer. The rationale may paraphrase and
+does not need to be an exact quote. Do not introduce details unsupported by the
+answer. If the answer does not support a criterion, score it zero and return
+exactly "Not present in the answer." as its rationale.
 Also return concise constructive feedback, strengths, weaknesses, missing
 major topics, and one specific suggested improvement. Do not return a total,
 percentage, hiring recommendation, or any other score; the backend calculates
