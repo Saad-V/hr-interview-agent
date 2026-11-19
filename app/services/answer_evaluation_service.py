@@ -1,13 +1,13 @@
 import re
 
-from app.ai.schemas import AnswerEvaluationSchema
+from app.ai.schemas import AnswerEvaluationSchema, RedFlagItemSchema
 from app.ai.llm import generate_structured_output
 from app.ai.prompts import (
     INTERVIEW_EVALUATION_SYSTEM_PROMPT,
     build_answer_evaluation_prompt,
 )
 from app.core.interview_design import RUBRIC_VERSION, RUBRIC_MAX_SCORES
-from app.schemas.interview_history import AuditedAnswerEvaluation
+from app.schemas.interview_history import AuditedAnswerEvaluation, RedFlagResponse
 from app.schemas.screening import CandidateScreeningFacts
 
 
@@ -40,16 +40,49 @@ def _validate_screening_facts(
         if facts.notice_evidence is None:
             raise ValueError("Notice period requires answer evidence.")
         evidence = validate_evidence(facts.notice_evidence, "Notice period")
-        if not re.search(
-            rf"(?<!\d){facts.stated_notice_days}(?!\d)",
-            evidence,
-        ) or not re.search(r"\bdays?\b", evidence):
+        stated_days = re.search(r"(?<!\d)(\d+)\s*days?\b", evidence)
+        stated_months = re.search(r"(?<!\d)(\d+)\s*months?\b", evidence)
+        immediate_availability = re.search(r"\bimmediate(?:ly)?\b", evidence)
+        matches_days = (
+            stated_days is not None
+            and int(stated_days.group(1)) == facts.stated_notice_days
+        )
+        matches_months = (
+            stated_months is not None
+            and int(stated_months.group(1)) * 30 == facts.stated_notice_days
+        )
+        matches_immediate = (
+            immediate_availability is not None
+            and facts.stated_notice_days == 0
+        )
+        if not (matches_days or matches_months or matches_immediate):
             raise ValueError(
-                "Notice period must be supported by a numeric answer excerpt in days."
+                "Notice period must match an answer excerpt stating days, months, "
+                "or immediate availability."
             )
 
     for red_flag in facts.red_flags:
         validate_evidence(red_flag.evidence, "Red flag")
+
+
+def _validate_red_flag_evidence(
+    red_flags: list[RedFlagItemSchema],
+    candidate_answer: str,
+) -> list[RedFlagResponse]:
+    validated = []
+    for red_flag in red_flags:
+        if not red_flag.evidence or red_flag.evidence not in candidate_answer:
+            raise ValueError("Red flag evidence must quote the candidate answer.")
+        if not red_flag.category.strip() or not red_flag.description.strip():
+            raise ValueError("Red flags must include a category and description.")
+        validated.append(
+            RedFlagResponse(
+                category=red_flag.category,
+                description=red_flag.description,
+                evidence=red_flag.evidence.strip(),
+            )
+        )
+    return validated
 
 
 def evaluate_answer(
@@ -70,6 +103,36 @@ def evaluate_answer(
         temperature=0.0,
     )
     _validate_screening_facts(evaluation.screening_facts, candidate_answer)
+
+    extracted_expected_ctc_lpa = evaluation.extracted_expected_ctc_lpa
+    if extracted_expected_ctc_lpa is None:
+        extracted_expected_ctc_lpa = evaluation.screening_facts.expected_ctc_lpa
+    elif extracted_expected_ctc_lpa != evaluation.screening_facts.expected_ctc_lpa:
+        raise ValueError(
+            "Expected CTC extraction must match the evidence-validated screening fact."
+        )
+
+    extracted_notice_period_days = evaluation.extracted_notice_period_days
+    if extracted_notice_period_days is None:
+        extracted_notice_period_days = evaluation.screening_facts.stated_notice_days
+    elif extracted_notice_period_days != evaluation.screening_facts.stated_notice_days:
+        raise ValueError(
+            "Notice-period extraction must match the evidence-validated screening fact."
+        )
+
+    red_flags = _validate_red_flag_evidence(
+        evaluation.red_flags,
+        candidate_answer,
+    )
+    if not red_flags:
+        red_flags = [
+            RedFlagResponse(
+                category="SCREENING_CONCERN",
+                description=red_flag.description,
+                evidence=red_flag.evidence,
+            )
+            for red_flag in evaluation.screening_facts.red_flags
+        ]
 
     expected_criteria = {
         point["criterion_id"]: point
@@ -151,4 +214,8 @@ def evaluate_answer(
         missing_topics=evaluation.missing_topics,
         suggested_improvement=evaluation.suggested_improvement,
         screening_facts=evaluation.screening_facts,
+        red_flags=red_flags,
+        extracted_expected_ctc_lpa=extracted_expected_ctc_lpa,
+        extracted_current_ctc_lpa=evaluation.extracted_current_ctc_lpa,
+        extracted_notice_period_days=extracted_notice_period_days,
     )

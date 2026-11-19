@@ -52,6 +52,13 @@ class EvaluationCriterionResponse(BaseModel):
     evidence: str
 
 
+class RedFlagResponse(BaseModel):
+    category: str
+    description: str
+    evidence: str
+    turn_number: int | None = None
+
+
 class AuditedAnswerEvaluation(BaseModel):
     rubric_version: str
     awarded_score: int
@@ -70,6 +77,10 @@ class AuditedAnswerEvaluation(BaseModel):
     screening_facts: CandidateScreeningFacts = Field(
         default_factory=CandidateScreeningFacts
     )
+    red_flags: list[RedFlagResponse] = Field(default_factory=list)
+    extracted_expected_ctc_lpa: float | None = None
+    extracted_current_ctc_lpa: float | None = None
+    extracted_notice_period_days: int | None = None
 
 
 class AnswerEvaluationResponse(BaseModel):
@@ -91,6 +102,10 @@ class AnswerEvaluationResponse(BaseModel):
     screening_facts: CandidateScreeningFacts = Field(
         default_factory=CandidateScreeningFacts
     )
+    red_flags: list[RedFlagResponse] = Field(default_factory=list)
+    extracted_expected_ctc_lpa: float | None = None
+    extracted_current_ctc_lpa: float | None = None
+    extracted_notice_period_days: int | None = None
 
 
 class ConversationTurnHistoryResponse(BaseModel):

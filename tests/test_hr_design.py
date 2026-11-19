@@ -4,13 +4,19 @@ import io
 import pytest
 
 from app.ai.prompts import (
+    INTERVIEW_BLUEPRINT_SYSTEM_PROMPT,
+    INTERVIEW_EVALUATION_SYSTEM_PROMPT,
+    INTERVIEW_REPORT_SYSTEM_PROMPT,
+    JOB_PROFILE_SYSTEM_PROMPT,
     build_answer_evaluation_prompt,
     build_interview_blueprint_prompt,
 )
 from app.ai.schemas import (
     CandidateProfileSchema,
+    HRPolicyBandSchema,
     InterviewBlueprintSchema,
     JobProfileSchema,
+    RedFlagItemSchema,
 )
 from app.core.config import Settings
 from app.core.enums import InterviewDifficulty
@@ -29,8 +35,12 @@ from app.core.interview_design import (
     validate_prohibited_question_guardrail,
 )
 from app.schemas.screening import CandidateScreeningFacts, EvidenceBackedRedFlag
+from app.schemas.report import InterviewReportResponse
 from app.services.ats_export_service import build_ats_export_csv
-from app.services.answer_evaluation_service import _validate_screening_facts
+from app.services.answer_evaluation_service import (
+    _validate_red_flag_evidence,
+    _validate_screening_facts,
+)
 from app.services.hr_screening_service import build_hr_screening_result
 
 
@@ -114,6 +124,31 @@ def test_blueprint_schema_applies_hr_titles_weights_and_question_guardrails():
     with pytest.raises(ValueError, match="Guardrail Violation"):
         InterviewBlueprintSchema.model_validate(payload)
 
+    payload["sections"][0]["questions"][0]["follow_up_questions"] = []
+    payload["sections"][0]["questions"][0]["question"] = "How old are you?"
+    with pytest.raises(ValueError, match="Guardrail Violation"):
+        InterviewBlueprintSchema.model_validate(payload)
+
+
+def test_job_profile_has_default_hr_policy_band():
+    policy = JobProfileSchema().hr_policy
+    assert policy == HRPolicyBandSchema(
+        min_salary_lpa=6.0,
+        max_salary_lpa=12.0,
+        currency="INR",
+        max_notice_period_days=30,
+        work_location="Hybrid / Onsite",
+    )
+
+
+def test_legacy_report_defaults_new_hr_scorecard_fields():
+    report = InterviewReportResponse.model_validate({"summary": "Legacy report"})
+    assert report.salary_band_check is None
+    assert report.red_flags == []
+    assert report.human_checkpoint_required is False
+    assert report.human_checkpoint_reasons == []
+    assert report.candidate_pool is None
+
 
 def test_blueprint_prompt_contains_hr_pool_and_final_salary_stage():
     prompt = build_interview_blueprint_prompt(
@@ -136,6 +171,39 @@ def test_blueprint_prompt_contains_hr_pool_and_final_salary_stage():
             candidate_answer="I led a project.",
         )
     )
+
+
+def test_hr_prompts_specify_policy_workflow_extraction_and_report_scope():
+    assert "min_salary_lpa" in JOB_PROFILE_SYSTEM_PROMPT
+    assert "6.0 and 12.0 LPA" in JOB_PROFILE_SYSTEM_PROMPT
+    assert "30 days" in JOB_PROFILE_SYSTEM_PROMPT
+
+    blueprint = build_interview_blueprint_prompt(
+        candidate_profile=CandidateProfileSchema(),
+        job_profile=JobProfileSchema(),
+        duration_minutes=10,
+        difficulty=InterviewDifficulty.EASY,
+    )
+    expected_titles = [
+        "01 / VERIFY: Background, Notice Period & Availability",
+        "02 / STAR PROJECTS: Past Project Probing",
+        "03 / ASSESS: Motivation, Communication & Culture Fit",
+        "04 / SALARY: Compensation Band & Final Logistics",
+    ]
+    assert [blueprint.index(title) for title in expected_titles] == sorted(
+        blueprint.index(title) for title in expected_titles
+    )
+    assert "Do not ask current CTC" in blueprint
+    assert "employer buyout" in blueprint
+    assert "STRICT GUARDRAIL" in blueprint
+    assert "ACCURACY (4)" in blueprint
+
+    assert "extracted_expected_ctc_lpa" in INTERVIEW_EVALUATION_SYSTEM_PROMPT
+    assert '"8 to 10 lakhs" -> 10.0' in INTERVIEW_EVALUATION_SYSTEM_PROMPT
+    assert '"immediate" -> 0' in INTERVIEW_EVALUATION_SYSTEM_PROMPT
+    assert "verbatim substring quote" in INTERVIEW_EVALUATION_SYSTEM_PROMPT
+    assert "confidential, structured" in INTERVIEW_REPORT_SYSTEM_PROMPT
+    assert "STAR project competency" in INTERVIEW_REPORT_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize(
@@ -223,6 +291,59 @@ def test_screening_extraction_requires_matching_explicit_answer_evidence():
         _validate_screening_facts(unsupported, "I expect 20 LPA.")
 
 
+@pytest.mark.parametrize(
+    ("notice_days", "evidence", "answer"),
+    [
+        (0, "I am available immediately", "I am available immediately."),
+        (15, "I have 15 days' notice", "I have 15 days' notice."),
+        (30, "My notice period is 1 month", "My notice period is 1 month."),
+        (60, "My notice period is 2 months", "My notice period is 2 months."),
+        (90, "My notice period is 90 days", "My notice period is 90 days."),
+    ],
+)
+def test_notice_extraction_accepts_days_months_and_immediate(
+    notice_days,
+    evidence,
+    answer,
+):
+    _validate_screening_facts(
+        CandidateScreeningFacts(
+            stated_notice_days=notice_days,
+            notice_evidence=evidence,
+        ),
+        answer,
+    )
+
+
+def test_notice_extraction_rejects_mismatched_converted_months():
+    with pytest.raises(ValueError, match="must match"):
+        _validate_screening_facts(
+            CandidateScreeningFacts(
+                stated_notice_days=60,
+                notice_evidence="My notice period is 1 month",
+            ),
+            "My notice period is 1 month.",
+        )
+
+
+def test_categorized_red_flag_requires_exact_answer_quote():
+    red_flag = RedFlagItemSchema(
+        category="BACKGROUND_GAP",
+        description="The candidate gives conflicting timelines.",
+        evidence="I left in March.",
+    )
+    assert _validate_red_flag_evidence(
+        [red_flag],
+        "I left in March. I started my next role in April.",
+    )[0].category == "BACKGROUND_GAP"
+
+    with pytest.raises(ValueError, match="must quote"):
+        _validate_red_flag_evidence(
+            [red_flag],
+            "I left in April.",
+        )
+
+
 def test_settings_require_salary_band_bounds_to_be_configured_together():
     with pytest.raises(ValueError, match="both HR_SALARY_MIN_LPA"):
         Settings(
@@ -302,6 +423,42 @@ def test_hr_screening_checks_salary_notice_and_evidence_flags():
     assert len(result["red_flags"]) == 1
 
 
+def test_hr_screening_aggregates_new_extraction_and_categorized_flags():
+    result = build_hr_screening_result(
+        [
+            {
+                "turn_number": 3,
+                "section_title": SECTION_TITLES["BEHAVIORAL"],
+                "evaluation": {
+                    "extracted_expected_ctc_lpa": 24.0,
+                    "extracted_current_ctc_lpa": 18.0,
+                    "extracted_notice_period_days": 45,
+                    "red_flags": [
+                        {
+                            "category": "COMPENSATION_MISMATCH",
+                            "description": "Candidate's expectation exceeds policy.",
+                            "evidence": "My expected CTC is 24 LPA.",
+                        }
+                    ],
+                    "screening_facts": {
+                        "salary_evidence": "My expected CTC is 24 LPA.",
+                        "notice_evidence": "My notice is 45 days.",
+                    },
+                },
+            }
+        ],
+        min_band_lpa=15,
+        max_band_lpa=20,
+        max_notice_days=60,
+    )
+    assert result["candidate_expected_lpa"] == 24.0
+    assert result["candidate_current_ctc_lpa"] == 18.0
+    assert result["candidate_notice_days"] == 45
+    assert result["salary_alignment_status"] == "OUTSIDE_BAND"
+    assert result["red_flags"][0]["category"] == "COMPENSATION_MISMATCH"
+    assert result["red_flags"][0]["turn_number"] == 3
+
+
 def test_missing_salary_band_is_visible_and_does_not_claim_alignment():
     result = build_hr_screening_result(
         [],
@@ -351,6 +508,7 @@ def test_ats_export_contains_summary_without_answer_evidence():
                 "approved_min_lpa": 15,
                 "approved_max_lpa": 30,
                 "candidate_expected_lpa": 24,
+                "candidate_current_ctc_lpa": 18,
                 "salary_alignment_status": "WITHIN_BAND",
                 "max_notice_days": 60,
                 "candidate_notice_days": 45,
@@ -377,6 +535,7 @@ def test_ats_export_contains_summary_without_answer_evidence():
     assert row["candidate_reference"] == "session-123"
     assert row["weighted_score"] == "78.25"
     assert row["candidate_expected_lpa"] == "24"
+    assert row["candidate_current_ctc_lpa"] == "18"
     assert row["salary_alignment_status"] == "WITHIN_BAND"
     assert row["candidate_notice_days"] == "45"
     assert '"INTRODUCTION"' in row["weighted_stage_scores"]

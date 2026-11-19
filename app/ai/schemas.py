@@ -50,6 +50,14 @@ class CandidateProfileSchema(BaseModel):
 # Job Profile
 # ----------------------------
 
+class HRPolicyBandSchema(BaseModel):
+    min_salary_lpa: float = 6.0
+    max_salary_lpa: float = 12.0
+    currency: str = "INR"
+    max_notice_period_days: int = 30
+    work_location: str = "Hybrid / Onsite"
+
+
 class JobProfileSchema(BaseModel):
     role: str = ""
     summary: str = ""
@@ -57,6 +65,7 @@ class JobProfileSchema(BaseModel):
     responsibilities: list[str] = Field(default_factory=list)
     education_requirement: str | None = None
     experience_requirement: str | None = None
+    hr_policy: HRPolicyBandSchema = Field(default_factory=HRPolicyBandSchema)
 
 
 # ----------------------------
@@ -94,6 +103,9 @@ class InterviewQuestionSchema(BaseModel):
 
     @model_validator(mode="after")
     def validate_rubric(self):
+        validate_prohibited_question_guardrail(self.question)
+        for follow_up in self.follow_up_questions:
+            validate_prohibited_question_guardrail(follow_up)
         if self.max_score != QUESTION_MAX_SCORE:
             raise ValueError(f"Every question must be worth {QUESTION_MAX_SCORE} points.")
         expected = set(RubricCriterionId)
@@ -154,9 +166,6 @@ class InterviewBlueprintSchema(BaseModel):
                 if normalized_question in seen_questions:
                     raise ValueError("Interview blueprint contains duplicate questions.")
                 seen_questions.add(normalized_question)
-                validate_prohibited_question_guardrail(question.question)
-                for follow_up in question.follow_up_questions:
-                    validate_prohibited_question_guardrail(follow_up)
         return self
 
 
@@ -172,6 +181,19 @@ class CriterionEvaluationSchema(BaseModel):
     evidence: str
 
 
+class RedFlagItemSchema(BaseModel):
+    category: str = Field(
+        description=(
+            "e.g. BACKGROUND_GAP, NOTICE_PERIOD_RISK, CULTURE_CONCERN, "
+            "COMPENSATION_MISMATCH"
+        )
+    )
+    description: str
+    evidence: str = Field(
+        description="Exact verbatim quote from the candidate answer supporting this red flag."
+    )
+
+
 class AnswerEvaluationSchema(BaseModel):
     criteria: list[CriterionEvaluationSchema]
     feedback: str
@@ -181,4 +203,26 @@ class AnswerEvaluationSchema(BaseModel):
     suggested_improvement: str
     screening_facts: CandidateScreeningFacts = Field(
         default_factory=CandidateScreeningFacts
+    )
+    red_flags: list[RedFlagItemSchema] = Field(default_factory=list)
+    extracted_expected_ctc_lpa: float | None = Field(
+        default=None,
+        description=(
+            "Candidate's stated expected annual salary/CTC in LPA "
+            "(Lakhs Per Annum) if mentioned in this answer, otherwise null."
+        ),
+    )
+    extracted_current_ctc_lpa: float | None = Field(
+        default=None,
+        description=(
+            "Candidate's stated current annual salary/CTC in LPA if mentioned, "
+            "otherwise null."
+        ),
+    )
+    extracted_notice_period_days: int | None = Field(
+        default=None,
+        description=(
+            "Candidate's stated notice period in days (e.g. immediate=0, "
+            "1 month=30, 2 months=60) if mentioned, otherwise null."
+        ),
     )

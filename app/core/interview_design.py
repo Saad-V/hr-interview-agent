@@ -22,9 +22,9 @@ SECTION_WEIGHTS = {
 }
 SECTION_TITLES = {
     "INTRODUCTION": "01 / VERIFY: Background, Notice Period & Availability",
-    "PROJECTS": "02 / STAR PROJECTS: Past Project Deep-Dive",
+    "PROJECTS": "02 / STAR PROJECTS: Past Project Probing",
     "TECHNICAL": "03 / ASSESS: Motivation, Communication & Culture Fit",
-    "BEHAVIORAL": "04 / SALARY: Compensation Expectations & Band Check",
+    "BEHAVIORAL": "04 / SALARY: Compensation Band & Final Logistics",
 }
 RUBRIC_MAX_SCORES = {
     "ACCURACY": 4,

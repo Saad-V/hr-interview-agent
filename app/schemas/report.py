@@ -31,6 +31,7 @@ class HRScreeningSummary(BaseModel):
     approved_min_lpa: float | None = None
     approved_max_lpa: float | None = None
     candidate_expected_lpa: float | None = None
+    candidate_current_ctc_lpa: float | None = None
     salary_alignment_status: Literal[
         "NOT_CONFIGURED",
         "NOT_DISCLOSED",
@@ -102,3 +103,8 @@ class InterviewReportResponse(BaseModel):
     unweighted_overall_score: float | None = None
     scorecard: HRScorecard | None = None
     screening_summary: HRScreeningSummary | None = None
+    salary_band_check: dict | None = None
+    red_flags: list[dict] = Field(default_factory=list)
+    human_checkpoint_required: bool = False
+    human_checkpoint_reasons: list[str] = Field(default_factory=list)
+    candidate_pool: str | None = None

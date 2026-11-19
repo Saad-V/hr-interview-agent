@@ -452,6 +452,8 @@ def submit_answer(
     next_question_index = question_index + 1
     is_final_answer = next_question_index >= len(questions)
     evaluation_json = evaluation.model_dump(mode="json")
+    for red_flag in evaluation_json["red_flags"]:
+        red_flag["turn_number"] = turn_number
     answer_exchange = {
         "section_title": section_title,
         "question": current_question["question"],
@@ -534,6 +536,22 @@ def submit_answer(
             ] + [{"exchange": answer_exchange, "evaluation": evaluation_json}],
         )
         overall_score = scorecard.weighted_score_percentage
+        salary_band_check = {
+            "approved_min_lpa": screening_summary.approved_min_lpa,
+            "approved_max_lpa": screening_summary.approved_max_lpa,
+            "candidate_expected_lpa": screening_summary.candidate_expected_lpa,
+            "candidate_current_ctc_lpa": screening_summary.candidate_current_ctc_lpa,
+            "salary_alignment_status": screening_summary.salary_alignment_status,
+            "max_notice_days": screening_summary.max_notice_days,
+            "candidate_notice_days": screening_summary.candidate_notice_days,
+            "notice_alignment_status": screening_summary.notice_alignment_status,
+            "policy_configured": screening_summary.policy_configured,
+        }
+        candidate_pools = {
+            InterviewDifficulty.EASY: "Fresher (0 years)",
+            InterviewDifficulty.MEDIUM: "Early-Career (1–3 years)",
+            InterviewDifficulty.HARD: "Mid-Level (3–6 years)",
+        }
         report_data = {
             "rubric_version": RUBRIC_VERSION,
             **calculated_scores,
@@ -541,6 +559,11 @@ def submit_answer(
             "unweighted_overall_score": calculated_scores["overall_score"],
             "scorecard": scorecard.model_dump(mode="json"),
             "screening_summary": screening_summary.model_dump(mode="json"),
+            "salary_band_check": salary_band_check,
+            "red_flags": screening_summary.red_flags,
+            "human_checkpoint_required": screening_summary.human_checkpoint_required,
+            "human_checkpoint_reasons": screening_summary.checkpoint_reasons,
+            "candidate_pool": candidate_pools[interview.difficulty],
             "strengths": narrative.strengths,
             "areas_for_improvement": narrative.areas_for_improvement,
             "summary": narrative.summary,
